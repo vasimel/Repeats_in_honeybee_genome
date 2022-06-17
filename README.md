@@ -22,4 +22,7 @@ To classify the repeat models a merged Dfam 3.5 and RepBase library was construc
 ```
 nohup RepeatMasker -a -gff -dir ../repeatmasker/ -lib honeybee-families.fa honeybee.fna >& ./masker.out &
 ```
+### Kimura plot
+To obtain table of divergence % we ran a [Perl script](https://github.com/4ureliek/Parsing-RepeatMasker-Outputs) for parsing RepeatMasker .align output file and built Kimura plots of honeybee repeat families.
+![image](https://user-images.githubusercontent.com/92578463/174393478-2c0c474f-3e63-4e6b-abf9-ef7588155359.png)
 
