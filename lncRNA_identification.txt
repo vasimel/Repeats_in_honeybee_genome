@@ -1,0 +1,131 @@
+разбор статьи The computational approaches of lncRNA identification based on coding potential: Status quo and challenges
+(https://www.sciencedirect.com/science/article/pii/S2001037020304979)
+
+Many lncRNAs share similar features with classical mRNAs, such as transcription by polymerase II with a 5′-cap and 3′-polyadenylated tail, splicing pattern, sequence length, frequent accumulation in the cytoplasm, and even overlap with coding genes.
+
+However, with the accumulated number of lncRNAs found in diversified species, the intrinsic distinctive features of lncRNAs are further assessed and weighted in characterization of RNA coding potential. Until now, many features are integrated into lncRNA’s identification, including ORF length and coverage, nucleotide composition and codon usage, conservation scores, k-mer sequence, RNA secondary structure, ribosome release score (RRS) and etc.
+
+On the other hand, with the development of recognition for lncRNAs, we start to re-examine the “coding” concept of RNAs. The results of advanced ribosome profiling have revealed that a considerably large part of lncRNAs tend to contain short open reading frames (sORFs) and bind with ribosomes.
+
+Короче, надо сначала собирать транскриптом, а потом внутри уже различать mRNA и lnRNA. 
+
+
+## downloading data
+for i in SRR6727829 SRR6727830 SRR6727832 SRR6727834 SRR6727836 SRR6727838 SRR6727840 SRR6727842 SRR6727843 SRR6727845 SRR6727846 SRR6727848 SRR6727849 SRR6727853 SRR6727856 SRR6727858 SRR6727859 SRR6727860 SRR6727831 SRR6727833 SRR6727835 SRR6727837 SRR6727839 SRR6727841 SRR6727844 SRR6727847 SRR6727850 SRR6727851 SRR6727852 SRR6727854 SRR6727855 SRR6727857
+do
+/data/usr/l.s.adonin/soft/sratoolkit.2.11.3-ubuntu64/bin/fasterq-dump --split-3 $i &
+done
+ 
+## compress all files 
+pigz * 
+
+## perform initial QC of sequencing data 
+/data/usr/l.s.adonin/soft/FastQC/fastqc * -o fastqc_initial/
+
+# downloading genome
+wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/003/254/395/GCF_003254395.2_Amel_HAv3.1/GCF_003254395.2_Amel_HAv3.1_genomic.fna.gz
+wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/003/254/395/GCF_003254395.2_Amel_HAv3.1/GCF_003254395.2_Amel_HAv3.1_genomic.gtf.gz
+
+# cheking for contamination
+
+## creating index for STAR
+/data/usr/l.s.adonin/soft/STAR/STAR-2.7.9a/bin/Linux_x86_64/STAR --runThreadN 16 \
+--runMode genomeGenerate \
+--genomeDir /data/usr/l.s.adonin/genome/STAR_index \
+--genomeFastaFiles /data/usr/l.s.adonin/genome/GCF_003254395.2_Amel_HAv3.1_genomic.fna \
+--sjdbGTFfile /data/usr/l.s.adonin/genome/GCF_003254395.2_Amel_HAv3.1_genomic.gtf \
+--sjdbOverhang 100 \
+--genomeSAindexNbases 12
+
+## alignment
+/data/usr/l.s.adonin/soft/STAR/STAR-2.7.9a/bin/Linux_x86_64/STAR --genomeLoad LoadAndExit \
+--genomeDir /data/usr/l.s.adonin/genome/STAR_index
+
+
+for i in *_1.fastq.gz
+do
+BASE=${i%%_1.fastq.gz}
+    /data/usr/l.s.adonin/soft/STAR/STAR-2.7.9a/bin/Linux_x86_64/STAR \
+    --genomeDir /data/usr/l.s.adonin/genome/STAR_index \
+    --runThreadN 150 \
+    --outSAMtype BAM Unsorted \
+    --readFilesIn $BASE"_1.fastq.gz" \
+                  $BASE"_2.fastq.gz" \
+    --readFilesCommand zcat \ \
+    --outFileNamePrefix $BASE 
+done 
+
+# remove index
+/data/usr/l.s.adonin/soft/STAR/STAR-2.7.9a/bin/Linux_x86_64/STAR --genomeLoad Remove \
+--genomeDir /data/usr/l.s.adonin/genome/STAR_index
+
+# extract mapped reads from bam files and get the fastq files
+for i in *Aligned.out.bam
+do
+BASE=${i%%Aligned.out.bam}
+/data/usr/l.s.adonin/soft/bin/samtools fastq -n $BASE"Aligned.out.bam" -1 ../$BASE"_1.fastq" -2 ../$BASE"_2.fastq" -0 /dev/null -s /dev/null &
+done
+
+pigz *fastq
+
+## adapter trimming
+for i in *_1.fastq.gz
+do
+BASE=${i%%_1.fastq.gz}
+java -jar /data/usr/l.s.adonin/soft/Trimmomatic-0.36/trimmomatic-0.36.jar PE -threads 10 \
+$BASE"_1.fastq.gz" $BASE"_2.fastq.gz" \
+../trimmed_reads/$BASE"_1_paired.fastq.gz" ../trimmed_reads/$BASE"_1_unpaired.fastq.gz" \
+../trimmed_reads/$BASE"_2_paired.fastq.gz" ../trimmed_reads/$BASE"_2_unpaired.fastq.gz" \
+ILLUMINACLIP:TruSeq3-PE.fa:2:30:10:2:True LEADING:3 TRAILING:3 MINLEN:36 &
+done
+
+## perform QC after trimming
+mkdir fastqc_after
+for i in *fastq.gz
+do
+/data/usr/l.s.adonin/soft/FastQC/fastqc $i -o fastqc_after/ &
+done
+
+## Trinity best practices
+https://informatics.fas.harvard.edu/best-practices-for-de-novo-transcriptome-assembly-with-trinity.html
+https://www.youtube.com/watch?v=9ky5NwV45qY
+https://biohpc.cornell.edu/lab/doc/trinity_workshop_part1.pdf
+
+#Additional tools required for running Trinity include:
+bowtie2
+jellyfish
+salmon
+samtools
+
+## Trinity running - transcriptome assembly
+/data/usr/l.s.adonin/soft/trinityrnaseq-v2.13.2/Trinity --seqType fq \
+--left SRR6727829_1_paired.fastq.gz,SRR6727840_1_paired.fastq.gz,SRR6727851_1_paired.fastq.gz,SRR6727830_1_paired.fastq.gz,SRR6727841_1_paired.fastq.gz,SRR6727852_1_paired.fastq.gz,SRR6727831_1_paired.fastq.gz,SRR6727842_1_paired.fastq.gz,SRR6727853_1_paired.fastq.gz,SRR6727832_1_paired.fastq.gz,SRR6727843_1_paired.fastq.gz,SRR6727854_1_paired.fastq.gz,SRR6727833_1_paired.fastq.gz,SRR6727844_1_paired.fastq.gz,SRR6727855_1_paired.fastq.gz,SRR6727834_1_paired.fastq.gz,SRR6727845_1_paired.fastq.gz,SRR6727856_1_paired.fastq.gz,SRR6727835_1_paired.fastq.gz,SRR6727846_1_paired.fastq.gz,SRR6727857_1_paired.fastq.gz,SRR6727836_1_paired.fastq.gz,SRR6727847_1_paired.fastq.gz,SRR6727858_1_paired.fastq.gz,SRR6727837_1_paired.fastq.gz,SRR6727848_1_paired.fastq.gz,SRR6727859_1_paired.fastq.gz,SRR6727838_1_paired.fastq.gz,SRR6727849_1_paired.fastq.gz,SRR6727860_1_paired.fastq.gz,SRR6727839_1_paired.fastq.gz,SRR6727850_1_paired.fastq.gz \
+--right SRR6727829_2_paired.fastq.gz,SRR6727840_2_paired.fastq.gz,SRR6727851_2_paired.fastq.gz,SRR6727830_2_paired.fastq.gz,SRR6727841_2_paired.fastq.gz,SRR6727852_2_paired.fastq.gz,SRR6727831_2_paired.fastq.gz,SRR6727842_2_paired.fastq.gz,SRR6727853_2_paired.fastq.gz,SRR6727832_2_paired.fastq.gz,SRR6727843_2_paired.fastq.gz,SRR6727854_2_paired.fastq.gz,SRR6727833_2_paired.fastq.gz,SRR6727844_2_paired.fastq.gz,SRR6727855_2_paired.fastq.gz,SRR6727834_2_paired.fastq.gz,SRR6727845_2_paired.fastq.gz,SRR6727856_2_paired.fastq.gz,SRR6727835_2_paired.fastq.gz,SRR6727846_2_paired.fastq.gz,SRR6727857_2_paired.fastq.gz,SRR6727836_2_paired.fastq.gz,SRR6727847_2_paired.fastq.gz,SRR6727858_2_paired.fastq.gz,SRR6727837_2_paired.fastq.gz,SRR6727848_2_paired.fastq.gz,SRR6727859_2_paired.fastq.gz,SRR6727838_2_paired.fastq.gz,SRR6727849_2_paired.fastq.gz,SRR6727860_2_paired.fastq.gz,SRR6727839_2_paired.fastq.gz,SRR6727850_2_paired.fastq.gz \
+--SS_lib_type RF \
+--max_memory 120G \
+--CPU 50 \
+--output trinity_output
+
+## merge all files into one
+cat *_1_paired.fastq.gz > merged_1.fq.gz
+cat *_2_paired.fastq.gz > merged_2.fq.gz
+
+## run spades
+mkdir rnaspades_output
+python3 /data/usr/l.s.adonin/soft/SPAdes-3.14.1-Linux/bin/rnaspades.py -1 merged_1.fq.gz -2 merged_2.fq.gz -t 100 -o rnaspades_output --memory 1024
+
+## QUAST - quality control of transcriptome assembly
+python3 /opt/rnaQUAST-2.2.1/rnaQUAST.py \
+--transcripts hard_filtered_transcripts.fasta trinity_output.Trinity.fasta \
+--reference GCF_003254395.2_Amel_HAv3.1_genomic.fna \
+--gtf GCF_003254395.2_Amel_HAv3.1_genomic.gtf \
+--disable_infer_genes
+
+## BUSCO
+busco -i /data/usr/l.s.adonin/bee_transcriptome/trimmed_reads/trinity_output.Trinity.fasta -l hymenoptera_odb10 -o busco_output_trinity -m transcriptome --cpu 40
+
+busco -i /data/usr/l.s.adonin/bee_transcriptome/trimmed_reads/rnaspades_output/hard_filtered_transcripts.fasta -l hymenoptera_odb10 -o busco_output_rnaspades -m transcriptome --cpu 40
+
+
+
+
