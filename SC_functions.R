@@ -1,4 +1,4 @@
-read_count_output <- function(dir, name) {
+read_count_output <- function(dir, name = dir) {
   dir <- normalizePath(dir, mustWork = TRUE)
   m <- readMM(paste0(dir, "/", name, ".mtx"))
   m <- Matrix::t(m)
@@ -11,6 +11,40 @@ read_count_output <- function(dir, name) {
   rownames(m) <- genes
   return(m)
 }
+read_count_output <- Vectorize(read_count_output, SIMPLIFY = F)
+
+#' Function to mark mitochondrial and ribosome genes with MT- and RB- labels
+#' 
+#' @param cells_x_genes path to cells_x_genes.genes.txt
+#' @param mitoch - character vector with mitochondrial gene names
+#' @param ribos - character vector with ribosomal gene names
+#' 
+#' @return Data.table of 1 column with ribosomal and mitochondrial gene names changed
+#' from "MITOGENE" to "MT-MITOGENE", "RIBOGENE" to "RB-RIBOGENE"
+#' 
+#' @export mark_rb_mt_genes
+#' @note Does not print result to console on some reason
+
+mark_rb_mt_genes <- function(cells_x_genes, mitoch, ribos){
+  genes <- fread(file = cells_x_genes, header = FALSE)
+  if (nrow(genes[grepl("MT-", V1)])){
+    warning(nrow(genes[grepl("MT-", V1)]), " mitochondrial genes seemed to be already replaced, skipping \n")
+  }else{
+    genes[V1 %in% mitoch, V1:=paste0("MT-", V1)]
+    genes[V1 %in% mitoch_repeats$V1, V1:=paste0("MT-", V1)]
+  }
+  if (nrow(genes[grepl("RB-", V1)])){
+    warning(nrow(genes[grepl("RB-", V1)]), " ribosomal genes seemed to be already replaced, skipping \n")
+  }else{
+    genes[V1 %in% ribos, V1:=paste0("RB-", V1)]
+    genes[grepl("rRNA", V1), V1:=paste0("RB-", V1)]
+  }
+  return(genes)
+}
+
+
+
+
 
 
 #' Knee plot for filtering empty droplets
