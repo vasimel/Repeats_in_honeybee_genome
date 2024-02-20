@@ -1,0 +1,226 @@
+---
+title: "Tertiary_scRNAseq_analysis"
+author: "Nick Panyushev"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+library(Matrix)
+library(RColorBrewer)
+library(tidyverse)
+library(Seurat)
+library(ggpointdensity)
+library(scico)
+library(scales)
+library(data.table)
+library(Matrix)
+#Change the path variable to match your file hierarchy
+path=("~/Paseka/Repeats_in_honeybee_genome/")
+setwd(path)
+source("SC_functions.R") #Contains home-made functions for scRNA analysis
+source("paper_dotplot_data_prep.R") #homemade function for dotplots by caste 
+```
+
+```{r loading seurat object, eval = F}
+load("./Seurats/all_integrated.RData")
+```
+
+
+```{r reading input files}
+markers <- fread("all_markers.tsv")
+repeat_markers <- markers$gene[grepl("^rnd-", markers$gene, perl = T)]
+repeat_markers <- unique(repeat_markers)
+gene_markers <- markers$gene[!grepl("rnd-", markers$gene)]
+gene_markers <- unique(gene_markers)
+```
+
+
+```{r DotPlot_basic}
+options(repr.plot.width=6, repr.plot.height=7)
+
+interesting_trancripts <- c("LOC410689", "LOC410151", "Tret1", "GlnS", "LOC411597", "LOC551684", "LOC413466", "LOC410657", "LOC724282", "Hiscl1", "LOC552079", "LOC100577751", "LOC410658", "LOC408804", "LOC408372", "E74", "Mblk-1", "Camkii")
+
+
+DP_genes_scaled <- DotPlot(all_integrated, features = interesting_trancripts,
+                    cols = (c("blue", "red")),
+                      scale.by = "size", scale = T)
+```
+
+
+```{r DotPlot_with_marked}
+DP_genes_scaled_remarks <- DP_genes_scaled +
+  
+  # highlight 1 zone
+  annotate("rect", xmin = 1.5, xmax = 4.5, ymin = 0, ymax = Inf,
+           fill = "lightgrey", alpha = 0.25, color = "lightgrey") +
+  
+  #highlight 2 zone
+  annotate("rect", xmin = 6.5, xmax = 9.5, ymin = 0, ymax = Inf,
+           fill = "lightgrey", alpha = 0.25, color = "lightgrey") +
+  
+  #highlight 3 zone
+  annotate("rect", xmin = 13.5, xmax = Inf, ymin = 0, ymax = Inf,
+           fill = "lightgrey", alpha = 0.25, color = "lightgrey") +
+  
+  
+  # 1st highlight A - clusters
+  annotate("rect", xmin = 0.5, xmax = 1.45, ymin = 0.5, ymax = 15.5,
+           color = "black", fill = NA) +
+  
+  # 1st highlight B - clusters
+  annotate("rect", xmin = 0.5, xmax = 1.45, ymin = 16.5, ymax = 17.5,
+           color = "black", fill = NA) +
+
+  # 2nd highlight - clusters
+  annotate("rect", xmin = 1.65, xmax = 4.45, ymin = 15.5, ymax = 16.5,
+           color = "black", fill = NA) +
+  
+  # 3rd highlight - clusters
+  annotate("rect", xmin = 4.5, xmax = 6.45, ymin = 17.5, ymax = 18.5,
+           color = "black", fill = NA) +
+  
+  
+  
+  # 4th highlight - clusters
+  annotate("rect", xmin = 6.65, xmax = 9.45, ymin = 11.5, ymax = 13.5,
+           color = "black", fill = NA) +
+  
+  
+  
+  # 5th highlight A - clusters
+  annotate("rect", xmin = 12.65, xmax = 13.45, ymin = 4.5, ymax = 6.5,
+           color = "black", fill = NA) +
+  
+  # 5th highlight B - clusters
+  annotate("rect", xmin = 12.65, xmax = 13.45, ymin = 7.5, ymax = 8.5,
+           color = "black", fill = NA) +
+  
+  # 5th highlight C - clusters
+  annotate("rect", xmin = 9.65, xmax = 10.45, ymin = 14.5, ymax = 15.5,
+           color = "black", fill = NA) +
+
+  # 5th highlight D - clusters
+  annotate("rect", xmin = 10.65, xmax = 12.45, ymin = 16.5, ymax = 17.5,
+           color = "black", fill = NA) +
+
+  
+  
+  # 6th highlight A - clusters
+  annotate("rect", xmin = 13.65, xmax = 15.45, ymin = 3.5, ymax = 4.5,
+           color = "black", fill = NA) +
+  annotate("rect", xmin = 16.65, xmax = 18.45, ymin = 3.5, ymax = 4.5,
+           color = "black", fill = NA) +
+  
+  # 6th highlight B - clusters
+  annotate("rect", xmin = 13.65, xmax = 15.45, ymin = 6.5, ymax = 7.5,
+           color = "black", fill = NA) +
+  annotate("rect", xmin = 15.65, xmax = 16.45, ymin = 6.5, ymax = 7.5,
+           color = "black", fill = NA) +
+  
+  # 6th highlight C - clusters
+  annotate("rect", xmin = 13.65, xmax = 15.45, ymin = 8.5, ymax = 11.5,
+           color = "black", fill = NA) +
+  annotate("rect", xmin = 15.65, xmax = 16.45, ymin = 10.5, ymax = 11.5,
+           color = "black", fill = NA) +
+  annotate("rect", xmin = 16.65, xmax = 18.45, ymin = 8.5, ymax = 10.5,
+           color = "black", fill = NA) +
+  
+  # 6th highlight D - clusters
+  annotate("rect", xmin = 13.65, xmax = 15.45, ymin = 13.5, ymax = 14.5,
+           color = "black", fill = NA) +
+    
+  theme(axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+DP_genes_scaled_remarks
+
+ggsave("DP_genes.svg", DP_genes_scaled_remarks, height = 148, width = 210, units = "mm")
+```
+
+```{r repeats_caste_difference}
+expression_matrix <-  all_integrated@assays$RNA@data
+expression_matrix <- expression_matrix[(rownames(expression_matrix) %in% repeat_markers),]
+summary(expression_matrix)
+dimnames(expression_matrix) <- list(repeat_markers, all_integrated$caste)
+foragers <- (expression_matrix[, (colnames(expression_matrix) == "forager")])
+nurses <- (expression_matrix[, (colnames(expression_matrix) == "nurse")])
+queens <- (expression_matrix[, (colnames(expression_matrix) == "queen")])
+
+foragers <- summary(foragers)
+foragers$j <- NULL
+foragers$i <- sapply(foragers$i, function(x)repeat_markers[x])
+foragers$caste <- "forager"
+
+nurses <- summary(nurses)
+nurses$j <- NULL
+nurses$i <- sapply(nurses$i, function(x)repeat_markers[x])
+nurses$caste <- "nurse"
+
+queens <- summary(queens)
+queens$j <- NULL
+queens$i <- sapply(queens$i, function(x)repeat_markers[x])
+queens$caste <- "queen"
+
+setDT(queens)
+setDT(nurses)
+setDT(foragers)
+
+all_caste_repeats <- rbind.data.frame(nurses, foragers, queens)
+rm(queens, nurses, foragers)
+setnames(all_caste_repeats, c("i", "x"), c("repeat_name", "value"))
+
+ggplot(all_caste_repeats, aes(x = value, color = caste))+
+  geom_density()+
+  theme_bw()+
+  facet_wrap(~repeat_name, ncol = 2)
+```
+```{r DotPlot_repeats_basic}
+
+DP_repeats_scaled <- DotPlot(all_integrated, features = repeat_markers,
+                    cols = (c("blue", "red")),
+                      scale.by = "size", scale = T) + coord_flip() 
+
+levels(DP_repeats_scaled$data$features.plot) <- c("Mariner-1/1", "Unknown-1/33", "EnSpm-5/1919", "Unknown-6/719",
+  "Copia-5/1071", "Unknown-5/2258", "Unknown-4/303", "Unknown-1/2")
+  
+DP_repeats_scaled
+ggsave("DP_repeats.svg", DP_repeats_scaled, height = 148, width = 210, units = "mm")
+```
+
+```{r rep_dotplot_data_preparation}
+repeat_markers_dt <- data.table(V1 = c("Mariner-1/1", "Unknown-1/33", "EnSpm-5/1919", "Unknown-6/719",
+                                       "Copia-5/1071", "Unknown-5/2258", "Unknown-4/303", "Unknown-1/2"),
+                                V2 = repeat_markers)
+
+foragers_repeats <- get_plot_data(all_integrated, repeat_markers_dt, "forager")
+nurses_repeats <- get_plot_data(all_integrated, repeat_markers_dt, "nurse")
+queens_repeats <- get_plot_data(all_integrated, repeat_markers_dt, "queen")
+```
+
+```{r repeat_caste_dotplot}
+repeats_DP <- rbind.data.frame(foragers, nurses, queens)
+
+repeats_DP$transcript <- factor(repeats_DP$transcript,
+                                  levels = repeat_markers_dt$V1)
+
+repeats_DP$stage <- factor(repeats_DP$stage, levels = c("queen", "nurse", "forager"))
+
+repeats_DP <- repeats_DP[order(repeats_DP$transcript)]
+
+plot_together <- ggplot(repeats_DP, mapping = aes(x = transcript, y = cluster)) +
+        geom_point(aes(size = pct.exp, colour = mean.exp)) +
+            scale_size_continuous(range = c(0.2, 3)) +
+        scale_color_gradient(low="blue", high='red', na.value = "white") + 
+  theme_bw() +
+  theme(axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(vjust = 0.5, hjust=0.5)) +
+        #axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  guides(size = guide_legend(title = "Percent Expressed")) + 
+        labs(x = "Features", y = "Cluster") + 
+  facet_grid(rows = vars(caste), scales = "free") 
+  
+plot_together
+```

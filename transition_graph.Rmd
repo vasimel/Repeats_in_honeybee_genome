@@ -1,0 +1,82 @@
+---
+title: "Transition_graph"
+author: "Nick Panyushev"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r libraries}
+library(ggplot2)
+library(data.table)
+library(RColorBrewer)
+#install.packages("igraph")  # Install the package if not already installed
+library(igraph)
+```
+
+```{r readout of the transition}
+worker_transitions <- as.matrix(fread("Worker_23_union_states_transition.csv", drop = 1, skip = 1))
+```
+
+
+As we are not interested in too many really not very likely transition - just
+replace them with zeroes 
+```{r filtering_out}
+worker_transitions[worker_transitions < 0.1] <- 0
+```
+
+```{r generating_adjacency_graph}
+graph <- graph.adjacency(worker_transitions, mode = "directed", weighted = TRUE)
+graph <- delete_edges(graph, E(graph)[weight < 0.01])
+```
+
+```{r customizing_graph}
+# Set the vertex labels
+V(graph)$label <- paste("E", c(1:23), sep = "")
+
+# Set the vertex color and size
+V(graph)$color <- "lightblue"
+V(graph)$size <- 30
+
+# Set the edge color and width
+E(graph)$color <- "gray"
+
+# Customizing graph attributes
+graph$name <- "Chromatin states transitions"
+
+
+in_degree <- degree(graph, mode = "in")
+out_degree <- degree(graph, mode = "out")
+
+
+vertices_positions <- data.table(Vertex = paste("E", c(1:23), sep = ""),
+                                 ins = in_degree, 
+                                 outs = out_degree)
+vertices_positions <- vertices_positions[order(ins, outs)]
+
+
+scale_edge_width <- function(weight_vector, min_width = 0.1, max_width = 10) {
+  normalized_weights <- (weight_vector - min(weight_vector)) / (max(weight_vector) - min(weight_vector))
+  return(min_width + normalized_weights * (max_width - min_width))
+}
+
+edge_widths <- scale_edge_width(E(graph)$weight)
+
+
+E(graph)$width <- edge_widths
+E(graph)$alpha <- scale(edge_widths, center = 0.5)
+
+
+```
+
+
+```{r igraph_plotting_tree}
+tree <- layout_as_tree(graph, mode = "out", circular = T, root = c(16, 9, 5, 11))
+plot(graph, layout = tree, edge.width = E(graph)$width, edge.alpha = E(graph)$alpha,
+       edge.curved = TRUE, canvas.width = 2000, canvas.height = 1000)
+
+tkplot(graph, layout = tree, edge.width = E(graph)$width, edge.alpha = E(graph)$alpha, vertex.size = 40,
+    edge.curved = TRUE, canvas.width = 2000, canvas.height = 1000)
+```
+
+
+

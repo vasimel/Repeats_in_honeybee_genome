@@ -1,11 +1,14 @@
 ---
-title: "Honeybee single-cell (kallisto bustools)"
-author: "Vasilina Melnichenko"
+title: "Honeybee KB single-cell processing"
+author: "Vasilina Melnichenko & Nick Panyushev"
 date: "01/06/2022"
 output: html_document
 ---
-## Set up
+
+## Environment setup
+
 ```{r setup, include=FALSE, echo=FALSE}
+#BiocManager::install("DropletUtils")
 library(DropletUtils)
 library(Matrix)
 library(tidyverse)
@@ -14,266 +17,322 @@ library(ggpointdensity)
 library(scico)
 library(scales)
 library(data.table)
-setwd("~/honeybee/single_cell/kb_counts")
-source("~/honeybee/single_cell/kb_counts/SC_functions.R")
+library(Matrix)
+#Change the path variable to match your file hierarchy
+path=("~/Paseka/Repeats_in_honeybee_genome/")
+setwd(path)
+source("SC_functions.R") #Contains home-made functions for scRNA analysis
 ```
-## Load the raw data
-```{r Load raw data, eval=TRUE}
-load("raw_data.RData")
+
+# Creating Seurat objects
+
+## Reading the sample sheet
+
+```{r reading Sample sheet}
+Sample_sheet <- fread("SraRunTable.txt")
 ```
-## Load a transcript to gene table and identify mitochondrial and ribosomal genes
+
+## Load the transcript2gene table and identify mitochondrial and ribosomal genes
+
 ```{r identifying mitochondrial and ribosomal genes in tr2g and adding MT- and RB- pattern}
+setwd(path)
 #list of mitochondrial genes
-mitoch <- fread("~/honeybee/kallisto_count_matrix/mitochondrial_genes", header =FALSE)
-ribos <- fread("~/honeybee/kallisto_count_matrix/ribosomal_genes", header =FALSE)
+mitoch <- fread("mitochondrial_genes", header =FALSE)
+ribos <- fread("ribosomal_genes", header =FALSE)
 #load the table of repeat consensi that aligned to mitochondrial genome 
-mitoch_repeats <- fread("~/Downloads/honeybee_mitochondrion_elements.csv")
+mitoch_repeats <- fread("honeybee_mitochondrion_elements.csv")
 
 mitoch$V1 <- NULL
 ribos$V1 <- NULL
 mitoch <- mitoch$V2
 ribos <- ribos$V2
-tr2g <- fread("~/honeybee/tx2gene.tsv", sep = "\t", fill = T, header=FALSE)
+tr2g <- fread("tx2gene.tsv", sep = "\t", fill = T, header=FALSE)
 colnames(tr2g) <- c("transcript", "gene_id", "gene_symbol")
 tr2g[gene_id %in% mitoch, gene_id:=paste0("MT-", gene_id)]
 tr2g[gene_id %in% mitoch_repeats$V1, gene_id:=paste0("MT-", gene_id)]
 tr2g[gene_id %in% ribos, gene_id:=paste0("RB-", gene_id)]
 tr2g[grepl("rRNA", gene_id), gene_id:=paste0("RB-", gene_id)]
 tr2g$gene_symbol <- tr2g$gene_id
+tr2g <- unique(tr2g[, .(gene_id, gene_symbol)])
 ```
-## Identify mitochondrial and ribosomal genes 
+
+## Identify mitochondrial and ribosomal genes in tx2gene
+
+In this chunk and hereafter we will comply to standard Seurat pipeline, but optimized for keeping RAM clear from objects not operated on. That's why here are lots of lapply statements.
+
 ```{r adding "MT-" pattern to all the mitochondrial genes in cells_x_genes matrix from kb}
-genes <- fread("~/honeybee/single_cell/kb_counts/SRR9020422/counts_unfiltered/cells_x_genes.genes.txt", header = FALSE)
-genes[V1 %in% mitoch, V1:=paste0("MT-", V1)]
-genes[V1 %in% mitoch_repeats$V1, V1:=paste0("MT-", V1)]
-genes[V1 %in% ribos, V1:=paste0("RB-", V1)]
-genes[grepl("rRNA", V1), V1:=paste0("RB-", V1)]
-fwrite(genes, file ="~/honeybee/single_cell/kb_counts/SRR9020421/counts_unfiltered/cells_x_genes.genes.txt", col.names = FALSE)
-fwrite(genes, file ="~/honeybee/single_cell/kb_counts/SRR9020422/counts_unfiltered/cells_x_genes.genes.txt", col.names = FALSE)
-fwrite(genes, file ="~/honeybee/single_cell/kb_counts/SRR9020423/counts_unfiltered/cells_x_genes.genes.txt", col.names = FALSE)
-fwrite(genes, file ="~/honeybee/single_cell/kb_counts/SRR9020424/counts_unfiltered/cells_x_genes.genes.txt", col.names = FALSE)
-fwrite(genes, file ="~/honeybee/single_cell/kb_counts/SRR9020425/counts_unfiltered/cells_x_genes.genes.txt", col.names = FALSE)
-fwrite(genes, file ="~/honeybee/single_cell/kb_counts/SRR9020426/counts_unfiltered/cells_x_genes.genes.txt", col.names = FALSE)
-fwrite(genes, file ="~/honeybee/single_cell/kb_counts/SRR9020427/counts_unfiltered/cells_x_genes.genes.txt", col.names = FALSE)
-fwrite(genes, file ="~/honeybee/single_cell/kb_counts/SRR9020428/counts_unfiltered/cells_x_genes.genes.txt", col.names = FALSE)
-```
-## Read the matrices
-```{r Read_matrices, warning=F, message=FALSE, results='hide'}
-ifelse(!exists("brain_1"), brain_1  <- read_count_output("SRR9020421/counts_unfiltered", name = "cells_x_genes"), TRUE) 
-ifelse(!exists("brain_2"), brain_2  <- read_count_output("SRR9020422/counts_unfiltered", name = "cells_x_genes"), TRUE)
-ifelse(!exists("brain_3"), brain_3  <- read_count_output("SRR9020423/counts_unfiltered", name = "cells_x_genes"), TRUE)
-ifelse(!exists("brain_4"), brain_4  <- read_count_output("SRR9020424/counts_unfiltered", name = "cells_x_genes"), TRUE)
-ifelse(!exists("mb_1"), mb_1  <- read_count_output("SRR9020425/counts_unfiltered", name = "cells_x_genes"), TRUE)
-ifelse(!exists("mb_2"), mb_2  <- read_count_output("SRR9020426/counts_unfiltered", name = "cells_x_genes"), TRUE)
-ifelse(!exists("mb_3"), mb_3  <- read_count_output("SRR9020427/counts_unfiltered", name = "cells_x_genes"), TRUE)
-ifelse(!exists("mb_4"), mb_4  <- read_count_output("SRR9020428/counts_unfiltered", name = "cells_x_genes"), TRUE)
-```
-## Save the raw data
-```{r save raw data, eval=FALSE}
-save(brain_1, brain_2, brain_3, brain_4, mb_1, mb_2, mb_3, mb_4,
-     file = "raw_data.RData")
-```
-## Dimensions and barcode ranks
-```{r}
-dim(brain_1)
-dim(brain_2)
-dim(brain_3)
-dim(brain_4)
-dim(mb_1)
-dim(mb_2)
-dim(mb_3)
-dim(mb_4)
-tot_counts <- Matrix::colSums(brain_1)
-summary(tot_counts)
-bc_rank_brain_1 <- barcodeRanks(brain_1, lower = 10)
-bc_rank_brain_2 <- barcodeRanks(brain_2, lower = 10)
-bc_rank_brain_3 <- barcodeRanks(brain_3, lower = 10)
-bc_rank_brain_4 <- barcodeRanks(brain_4, lower = 10)
-bc_rank_mb_1 <- barcodeRanks(mb_1, lower = 10)
-bc_rank_mb_2 <- barcodeRanks(mb_2, lower = 10)
-bc_rank_mb_3 <- barcodeRanks(mb_3, lower = 10)
-bc_rank_mb_4 <- barcodeRanks(mb_4, lower = 10)
-```
-
-##Building knee plots
-```{r knee plot}
-options(repr.plot.width=9, repr.plot.height=6)
-knee_plot(bc_rank_brain_1)
-knee_plot(bc_rank_brain_2)
-knee_plot(bc_rank_brain_3)
-knee_plot(bc_rank_brain_4)
-knee_plot(bc_rank_mb_1)
-knee_plot(bc_rank_mb_2)
-knee_plot(bc_rank_mb_3)
-knee_plot(bc_rank_mb_4)
-```
-## Filtering empty droplets
-```{r}
-brain_1 <- knee_filter(brain_1)
-brain_2 <- knee_filter(brain_2)
-brain_3 <- knee_filter(brain_3)
-brain_4 <- knee_filter(brain_4)
-mb_1 <- knee_filter(mb_1)
-mb_2 <- knee_filter(mb_2)
-mb_3 <- knee_filter(mb_3)
-mb_4 <- knee_filter(mb_4)
-dim(mb_4)
-```
-
-
-```{r}
-tr2g <- tr2g %>%
-  select(-transcript) %>%
-  distinct()
-
-# Convert from Ensembl gene ID to gene symbol
-rownames(brain_1) <- tr2g$gene_symbol[match(rownames(brain_1), tr2g$gene_id)]
-rownames(brain_2) <- tr2g$gene_symbol[match(rownames(brain_2), tr2g$gene_id)]
-rownames(brain_3) <- tr2g$gene_symbol[match(rownames(brain_3), tr2g$gene_id)]
-rownames(brain_4) <- tr2g$gene_symbol[match(rownames(brain_4), tr2g$gene_id)]
-rownames(mb_1) <- tr2g$gene_symbol[match(rownames(mb_1), tr2g$gene_id)]
-rownames(mb_2) <- tr2g$gene_symbol[match(rownames(mb_2), tr2g$gene_id)]
-rownames(mb_3) <- tr2g$gene_symbol[match(rownames(mb_3), tr2g$gene_id)]
-rownames(mb_4) <- tr2g$gene_symbol[match(rownames(mb_4), tr2g$gene_id)]
-```
-
-## Seurat object
-```{r creating Seurat object}
-seu_brain_1 <- CreateSeuratObject(brain_1, min.cells = 3, min.features = 200)
-seu_brain_2 <- CreateSeuratObject(brain_2, min.cells = 3, min.features = 200)
-seu_brain_3 <- CreateSeuratObject(brain_3, min.cells = 3, min.features = 200)
-seu_brain_4 <- CreateSeuratObject(brain_4, min.cells = 3, min.features = 200)
-seu_mb_1 <- CreateSeuratObject(mb_1, min.cells = 3, min.features = 200)
-seu_mb_2 <- CreateSeuratObject(mb_2, min.cells = 3, min.features = 200)
-seu_mb_3 <- CreateSeuratObject(mb_3, min.cells = 3, min.features = 200)
-seu_mb_4 <- CreateSeuratObject(mb_4, min.cells = 3, min.features = 200)
-
-seu_brain_1$organ <- "brain"
-seu_brain_2$organ <- "brain"
-seu_brain_3$organ <- "brain"
-seu_brain_4$organ <- "brain"
-seu_mb_1$organ <- "mushroom_body"
-seu_mb_2$organ <- "mushroom_body"
-seu_mb_3$organ <- "mushroom_body"
-seu_mb_4$organ <- "mushroom_body"
-seu <- list(seu_brain_1, seu_brain_2, seu_brain_3, seu_brain_4, seu_mb_1, seu_mb_2, seu_mb_3, seu_mb_4)
-# count percentage of mitochondrial and ribosomal genes
-for (i in 1:8) {
-  seu[[i]][["percent.mt"]]<- PercentageFeatureSet(seu[[i]], pattern = "MT-")
-  seu[[i]][["percent.rb"]] <- PercentageFeatureSet(seu[[i]], pattern = "RB-")
+for (i in kb_paths){
+  file_to_write <- paste("~/Paseka/", i, "/counts_unfiltered/cells_x_genes.genes.txt", sep = "")
+  fwrite(mark_rb_mt_genes(file_to_write, mitoch, ribos), file = file_to_write, col.names = FALSE)
+  rm(file_to_write, i)
 }
+```
 
-# Visualize QC metrics as a violin plot
+## Load raw data from Kallisto Bustools matrices
+
+```{r gunzip all the matrices, engine='bash', eval=FALSE}
+#Unpackng all the archives with .mtx files
+cd ~/Paseka/
+pigz -dk -p 8 ./SRR*/counts_unfiltered/*.gz
+```
+
+```{r Load raw data, eval=TRUE}
+kb_paths <- dir("../")[-1] # Do not need the first folder, as it is the git repo
+                           #  itself
+```
+
+## Read KB matrices and save them as .RData objects
+
+```{r Read_matrices, eval=FALSE}
+SRRs <- sub("_out", "", kb_paths)
+
+for (i in SRRs){
+  dir <- paste("~/Paseka/", i, "_out/counts_unfiltered", sep = "")
+  if(!exists(i)){ 
+    assign(i, read_count_output(dir, name = "cells_x_genes"))
+  }else{
+        warning("Object ", i, " exists, saving on disk and removing from workspace")
+  }
+  save(list = i, file = paste0(i, ".RData"))
+  remove(list=c(dir, i))
+  gc(verbose = F, full = F)
+}
+rm(i)
+```
+
+## Get summary statistics of the each unfiltered dataset
+
+```{r sum_stat_unfiltered}
+counts_stat <- sapply(SRRs, function(x){
+  load(paste0(x,".RData"))
+  tot_counts <- Matrix::colSums(get(x)[[1]])
+  return(c(dim(get(x)[[1]]), summary(tot_counts)))
+})
+
+counts_stat <- as.data.table(t(counts_stat), keep.rownames = T)
+setnames(counts_stat, old = c("rn", "V1", "V2"),
+         new = c("Sample", "genes_number", "cell_number"))
+```
+
+# QC
+
+### Knee plots
+
+```{r knee plots}
+#The barcodeRanks object is around 4.8GB, be careful! 
+# Executing takes ~10mins 
+barcodeRanks <- sapply(SRRs, function(x){
+  load(paste0(x,".RData"))
+  return(barcodeRanks(get(x)[[1]], lower = 10))
+})
+
+#knee_plots <- lapply(barcodeRanks, knee_plot) - uncomment to see knee plots in here
+sapply(names(knee_plots), function(x) ggsave(paste0("./Knee_plots/", x, ".png"),
+  knee_plots[[x]] + ggtitle(x)))
+rm(barcodeRanks)
+```
+
+### Filtering empty droplets out
+
+```{r knee_filtering}
+tmp <- lapply(SRRs, function(x){
+  load(paste0(x,".RData"))
+  assign(x, knee_filter(get(x)[[1]]))
+  save(list = x, file = paste0("./knee_filtered/", x, ".RData"))
+  })
+rm(tmp)
+```
+
+### Get summary statistics after filtering
+
+```{r sum_stat_filtered}
+counts_stat_filtered <- sapply(SRRs, function(x){
+  load(paste0("./knee_filtered/", x,".RData"))
+  tot_counts <- Matrix::colSums(get(x))
+  return(c(dim(get(x)), summary(tot_counts)))
+})
+
+counts_stat_filtered <- as.data.table(t(counts_stat_filtered), keep.rownames = T)
+setnames(counts_stat_filtered, old = c("rn", "V1", "V2"),
+         new = c("Sample", "genes_number", "cell_number"))
+fwrite(counts_stat_filtered, "filtered_stats.tsv")
+```
+
+## Seurat object creation
+
+```{r creating Seurat objects}
+tmp <- sapply(Sample_sheet$Run,  function(x){
+  load(paste0("./knee_filtered/", x,".RData"))
+  assign(x, CreateSeuratObject(get(x), min.cells = 3, min.features = 200))
+  save(list = x, file = paste0("./Seurats/", x, ".RData"))
+  })
+rm(tmp)
+```
+
+## Percentage of mitochondrial and ribosomal genes
+
+```{r mt and rb features}
+tmp <- sapply(Sample_sheet$Run,  function(x){
+  ds_name <- filename <- x
+  load(paste0("./Seurats/", x,".RData"))
+  x <- get(x)
+  x[["mito.fraction"]] <-  PercentageFeatureSet(x, pattern = "MT-")
+  x[["ribo.fraction"]] <-  PercentageFeatureSet(x, pattern = "RB-")
+  x[["organ"]] <- "brain"
+  x[["stage"]] <- "adult"
+  x[["SRA"]] <- filename
+  x[["caste"]] <- unique(Sample_sheet[Run==filename, caste])
+  assign(ds_name, x)
+  save(list = ds_name, file = paste0("./Seurats/", filename, ".RData"))
+  })
+rm(tmp)
+```
+
+## Visualize QC metrics as a violin plot
+
+```{r}
 options(repr.plot.width=12, repr.plot.height=6)
-lapply(seu, VlnPlot, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0.1)
-lapply(seu, VlnPlot, features = c("nFeature_RNA", "nCount_RNA", "percent.rb"), ncol = 3, pt.size = 0.1)
+mito_ribo_plots <- lapply(Sample_sheet$Run, function(x){
+  sra <- x 
+  load(paste0("./Seurats/tmp/", x, ".RData"))
+  tmp <- VlnPlot(x, c("mito.fraction", "ribo.fraction"), ncol = 2) + 
+  patchwork::plot_annotation(title = sra)
+  return(tmp)     
+})
+
+#lapply(mito_ribo_plots, plot) #- uncomment to see knee plots in here
+
+names(mito_ribo_plots) <- Sample_sheet$Run
+# This lapply saves plots in MtRb_plots folder
+tmp <- sapply(names(mito_ribo_plots), function(x) ggsave(paste0("./MtRb_plots/", x, ".png"),
+ mito_ribo_plots[[x]]))
+rm(tmp)
 ```
 
-```{r mitochondrial percentahe and UMI counts plot}
-ggplot(seu@meta.data, aes(nCount_RNA, percent.mt)) +
-  geom_pointdensity() +
-  scale_color_scico(palette = "devon", direction = -1, end = 0.9) +
-  labs(x = "Total UMI counts", y = "Percentage mitochondrial") +
-  xlim(0, 10000)+
-  ylim(0,10)
-```
-```{r filter cells with more than 5% mitochondrial genes}
-for (i in 1:8) {
-  seu[[i]] <- subset(seu[[i]], subset = percent.mt < 5)
-  seu[[i]] <- subset(seu[[i]], subset = percent.rb < 5)
-}
-dim(seu[[5]])
-seu <- lapply(seu, SCTransform, verbose = FALSE)
-dim(seu)
-save(seu, file="~/honeybee/single_cell/kb_counts/seu_list.Rdata")
+### Gather some stats about Rb and Mt percentage
+
+```{r Mt_RB_stats}
+mtrb_counts_stat <- sapply(Sample_sheet$Run, function(x){
+  load(paste0("./Seurats/", x,".RData"))
+  return(c(summary(get(x)@meta.data$mito.fraction),
+           summary(get(x)@meta.data$ribo.fraction)))
+})
+
+mtrb_counts_stat <- as.data.table(t(mtrb_counts_stat), keep.rownames = T)
+
+names(mtrb_counts_stat) <- c("Run", "MT-min", "MT-Q1", "MT-Median", "MT-Mean", "MT-Q3", "MT-max",
+                             "RB-min", "RB-Q1", "RB-Median", "RB-Mean", "RB-Q3", "RB-max")
 ```
 
-```{r integrating seurat objects into one object}
-options(future.globals.maxSize= 8912896000)
-features <- SelectIntegrationFeatures(object.list = seu, nfeatures = 3000)
-seu <- PrepSCTIntegration(object.list = seu, anchor.features = features, verbose = FALSE)
-anchors <- FindIntegrationAnchors(object.list = seu, normalization.method = "SCT", 
-    anchor.features = features, verbose = FALSE)
-seurats <- IntegrateData(anchorset = anchors, normalization.method = "SCT", 
-    verbose = FALSE)
+### Filter dead cells out
+
+```{r filter cells with more than 5% mt or 30% rb}
+tmp <- sapply(Sample_sheet$Run,  function(x){
+  ds_name <- filename <- x
+  load(paste0("./Seurats/", x,".RData"))
+  x <- get(x)
+  x <- subset(x, subset = mito.fraction < 5)
+  x <- subset(x, subset = ribo.fraction < 30)
+  assign(ds_name, x)
+  save(list = ds_name, file = paste0("./Seurats/filtered/", filename, ".RData"))
+  })
+rm(tmp)
+gc(verbose = F)
+```
+
+## Gather stats about filtered datasets
+
+```{r}
+mtrb_counts_stat_filtered <- sapply(Sample_sheet$Run, function(x){
+  load(paste0("./Seurats/filtered/", x,".RData"))
+  return(c(summary(get(x)@meta.data$mito.fraction),
+           summary(get(x)@meta.data$ribo.fraction),
+           dim(get(x))))
+})
+
+mtrb_counts_stat_filtered <- as.data.table(t(mtrb_counts_stat_filtered), keep.rownames = T)
+
+names(mtrb_counts_stat_filtered) <- c("Run", "MT-min", "MT-Q1", "MT-Median", "MT-Mean", "MT-Q3", "MT-max",
+                             "RB-min", "RB-Q1", "RB-Median", "RB-Mean", "RB-Q3", "RB-max", 
+                             "n_genes", "n_cells")
+fwrite(mtrb_counts_stat_filtered, file = "filtered_stats.tsv", sep = "\t")
+
+sum(mtrb_counts_stat_filtered$n_cells) #1.2 Mln of cells
+```
+
+# Integrating all datasets
+
+HOWTO is taken from here: <https://satijalab.org/seurat/articles/integration_large_datasets.html>
+
+```{r normalization}
+# options(future.globals.maxSize= 8912896000)
+tmp <- sapply(Sample_sheet$Run,  function(x){
+  ds_name <- filename <- x
+  cat("Loading and normalizing ", filename, "\n")
+  load(paste0("./Seurats/filtered/", x,".RData"))
+  x <- get(x)
+  x <- NormalizeData(x, verbose = F)
+  x <- FindVariableFeatures(x, verbose = F)
+  assign(ds_name, x)
+  save(list = ds_name, file = paste0("./Seurats/filtered/", filename, ".RData"))
+  cat(filename, " saved! \n")
+  })
+rm(tmp)
 gc()
-save(seurats, file="~/honeybee/single_cell/kb_counts/bees_integrated.Rdata")
 ```
 
-```{r variable features}
-load("~/Downloads/bees_integrated.Rdata")
-seurats <- FindVariableFeatures(seurats, nfeatures = 3000)
-top10 <- head(VariableFeatures(seurats), 10)
-plot1 <- VariableFeaturePlot(seurats, log = FALSE)
-LabelPoints(plot = plot1, points = top10, repel = TRUE)
-df_top10 <- as.data.frame(top10)
-write_csv(df_top10, file="~/honeybee/single_cell/kb_counts/top_10_variable_genes.tsv")
+```{r getting variable features}
+#read all the Seurats from disk to seurat list
+all_SRRs <- lapply(Sample_sheet$Run, function(x){
+  load(paste0("./Seurats/filtered/", x,".RData"))
+       return(get(x))})
+
+names(all_SRRs) <- Sample_sheet$Run
+
+features <- SelectIntegrationFeatures(object.list = all_SRRs, nfeatures = 3000)
+save(features, file = "features2integrate.RData")
+rm(all_SRRs)
+gc(verbose = F)
 ```
 
-```{r Run PCA}
-seurats <- RunPCA(seurats, verbose = FALSE, npcs = 20) # uses HVG by default
-ElbowPlot(seurats, ndims = 20)
-PCAPlot(seurats)
+```{r Scaling and PCA on each ds separately}
+load("features2integrate.RData")
+tmp <- sapply(Sample_sheet$Run,  function(x){
+  ds_name <- filename <- x
+  load(paste0("./Seurats/filtered/", x,".RData"))
+  x <- get(x)
+  cat("Scaling ", filename, "\n")
+  x <- ScaleData(x, features = features, verbose = FALSE, block.size = 500)
+  cat("Running PCA on ", filename, "\n")
+  x <- RunPCA(x, features = features, verbose = FALSE)
+  assign(ds_name, x)
+  save(list = ds_name, file = paste0("./Seurats/filtered/", filename, ".RData"))
+  cat(filename, " saved! \n")
+  })
+rm(tmp)
+gc()
 ```
 
-```{r Clustering}
-seurats <- FindNeighbors(seurats, dims = 1:10)
-seurats <- FindClusters(seurats)
-PCAPlot(seurats)
+```{r saving list of objects}
+#read all the Seurats from disk to seurat list
+all_SRRs <- lapply(Sample_sheet$Run, function(x){
+  load(paste0("./Seurats/filtered/", x,".RData"))
+       return(get(x))})
+
+save(all_SRRs, file = "./Seurats/filtered/all_SRRs.RData")
 ```
 
+```{r finding anchors for integration}
+load("./Seurats/filtered/all_SRRs.RData")
 
-```{r t-SNE}
-seurats <- RunTSNE(seurats, dims = 1:15)
-TSNEPlot(seurats)
+anchors <- FindIntegrationAnchors(object.list = all_SRRs, reference = c(1, 2, 30, 31, 16, 17),
+                                  reduction = "rpca", dims = 1:50)
+gc()
+save(anchors, file = "./Seurats/filtered/anchors.RData")
+rm(all_SRRs)
+gc()
 ```
 
-```{r UMAP}
-seurats <- RunUMAP(seurats, dims = 1:15, verbose = FALSE)
-UMAPPlot(seurats)
-```
+All subsequent steps were performed on high-performance cluster using the separate script Integrate.R
 
-```{r Feature plots}
-options(repr.plot.width=7, repr.plot.height=6)
-FeaturePlot(seurats, reduction = "umap", feature = "rnd-5-family-1274#DNA/TcMar-Mariner")
-```
-
-```{r Find cluster markers}
-markers <- FindAllMarkers(seurats, test.use = "MAST", only.pos = FALSE, 
-                               min.pct = 0.25, logfc.threshold = 0.25)
-## find top 10 markers for each cluster
-################### continue
-markers <- fread("~/Downloads/markers.tsv")
-
-```
-
-```{r DotPlots}
-options(repr.plot.width=6, repr.plot.height=7)
-DotPlot(seurats, assay = "RNA", features = c("AChE-2", "LOC412993", "LOC409633", "LOC408435", "LOC408411", "LOC725415", "LOC100576428", "LOC410669", "LOC411050", "LOC724120"), scale.by = "size") +
-  coord_flip()
-```
-
-```{r marker genes violin plots}
-options(repr.plot.width=16, repr.plot.height=20)
-VlnPlot(seu, features = top10, ncol = 4) +
-  facet_grid()
-```
-
-```{r marker feature plots}
-significant_markers <- seu.markers.t[seu.markers.t$p_val_adj < 0.05,]
-significant_markers <- significant_markers[order(significant_markers$avg_log2FC, decreasing = TRUE), ]
-significant_markers <- rownames(significant_markers[1:10, ])
-```
-
-```{r dotplot of marker genes}
-options(repr.plot.width=6, repr.plot.height=7)
-DotPlot(seu, assay = "RNA", features = significant_markers, scale.by = "size") +
-  coord_flip()
-```
-
-##Counting correlation of repeats expression with mitochondrial genes
-```{r, echo=FALSE}
-FetchData(seurats)[["percent.mt"]]
-CountMyGeneMyCell<-GetAssayData(object = seurats, slot = 'counts')["MT-rnd-6-family-284#Unknown", dimnames=]
-seurats_counts <- as.matrix(seurats@assays[["RNA"]]@counts)
-```
+Plots and cluster annotation will be made with Cluster_annotation.Rmd

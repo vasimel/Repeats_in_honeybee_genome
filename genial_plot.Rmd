@@ -1,0 +1,749 @@
+```{r setup, echo=TRUE}
+library(ggplot2)
+library(data.table)
+library(tidyr)
+library(RColorBrewer)
+```
+
+```{r reading .out files and reformatting it}
+workers <- fread("/home/nick/Desktop/Пасека/Worker_repeat_states.out")
+tmp <- names(workers)[!startsWith(names(workers), "E")]
+workers <- workers[, ..tmp] #removing all the columns starting with E
+rm(tmp)
+names(workers) <- c("SW_score", "%_div", "%_del", "%_ins",
+                    "chr", "start", "end", "chr_residual_length",
+                    "consensus_strand", "element", "class",
+                    "consensus_start", "consensus_end", "consensus_residual_length", 
+                    "ID", "Kimura")
+
+#workers$Kimura <- round(workers$Kimura, digits = 1) #temporarily commented this out - to see, if the higher "resolution" can help us to fit better model
+workers$consensus_strand <- ifelse(workers$consensus_strand == "C", "-", "+")
+
+#Calculating copy numbers
+copy_number <- workers[, .(ID, element)]
+copy_number <- unique(copy_number)
+copy_number <- copy_number[, .N, by = element]
+setnames(copy_number, "N", "copy_number")
+workers <- merge(workers, copy_number)
+rm(copy_number)
+workers <- workers[Kimura < 51 & Kimura > 0]
+```
+
+Now we have to select best matches for every instance of the repeat
+```{r best_matches}
+workers[, max_SW := max(SW_score), by = .(element, ID)]
+workers <- workers[SW_score == max_SW]
+tmp <- workers[, .N, by = .(element, ID)]
+tmp <- tmp[N==1, ID]
+workers <- workers[ID %in% tmp] #remove all multi-hits - idk how to deal with them
+rm(tmp)
+workers <- workers[(end-start) > 49,] #deleting the short repeats, which are smaller than bins
+```
+
+We are not interested in overlapping repeats, because this will make impossible overlapping with the chromatin states.
+So, we will create .gff file with all the data and then split the intersections to small regions which belong to the single repeat 
+```{r gff_creation}
+gff <- workers[, .(chr, start, end)]
+gff$source <- "."
+gff$type <- "repeat"
+gff$score <- "."
+gff$strand <- "+"
+gff$phase <- "."
+setcolorder(gff, c("chr", "source", "type", "start", "end", "score", "strand", "phase"))
+gff$attributes <- paste(paste("Element=", workers$element, sep = ""), 
+                        paste("ID=", workers$ID, sep = ""),
+                        paste("SW_score=", workers$SW_score, sep = ""),
+                        paste("Kimura=", workers$Kimura, sep = ""),
+                        paste("div=", workers$`%_div`, sep = ""),
+                        paste("del=", workers$`%_del`, sep = ""),
+                        paste("ins=", workers$`%_ins`, sep = ""),
+                        paste("cons_strand=", workers$consensus_strand, sep = ""),
+                        paste("cons_start=", workers$consensus_start, sep = ""),
+                        paste("cons_end=", workers$consensus_end, sep = ""),
+                        paste("class=", workers$class, sep = ""),
+                        paste("copy_number=", workers$copy_number, sep = ""),
+                                                sep = ";")
+fwrite(gff, "nested_repeats.gff3", sep = "\t", col.names = F)
+system("awk 'BEGIN {print \"##gff-version 3\"} 1' nested_repeats.gff3 > tmp && mv tmp nested_repeats.gff3")
+```
+
+
+```{r bed_creation}
+bed <- workers[, .(chr, start, end, element, ID, SW_score, Kimura, `%_div`, 
+                   `%_del`, `%_ins`, consensus_strand, consensus_start, consensus_end,
+                   class, copy_number)]
+fwrite(bed, "nested_repeats.bed", sep = "\t", col.names = F)
+```
+
+Parsing out the files with bedops + bedtools
+```{r, engine='bash', eval=T, bed_manipulations}
+sort-bed nested_repeats.bed | bedops --partition --ec - > unnested_tmp.bed 
+bedtools intersect -wb -a unnested_tmp.bed -b nested_repeats.bed > unnested_repeats.bed
+rm unnested_tmp.bed
+```
+
+Read the parsed output back
+
+```{r}
+workers_unnested <- fread("unnested_repeats.bed")
+workers_unnested$V4 <- NULL
+names(workers_unnested) <- c("chr", "start_resolved", "end_resolved", 
+                             "start_orig", "end_orig", "element", 
+                             "ID", "SW_score", "Kimura", "%_div", "%_del",
+                             "%_ins", "consensus_strand", "consensus_start",
+                             "consensus_end", "class", "copy_number")
+```
+
+Trying to find out the ways how to deal with duplicates, estimating the number of the overlapping repeats
+```{r estimating overlaps}
+duplicates <- workers_unnested[, .N, by = .(chr, start_resolved, end_resolved)]
+
+monoplicates <- duplicates[N == 1]
+singles <- sum(monoplicates$end_resolved - monoplicates$start_resolved)/1000
+
+
+
+duplicates <- duplicates[N > 1]
+duplicates <- sum(duplicates$end_resolved - duplicates$start_resolved)/1000
+
+duplicates/singles
+```
+Ok, there is not that much overlapping things, let's let them be.
+Nothing really bad will happen if we count them twice
+
+```{r binning}
+binsize = 50
+workers_unnested$start_bin <- floor(workers_unnested$start_resolved/binsize)*binsize
+workers_unnested$end_bin <- ceiling(workers_unnested$end_resolved/binsize)*binsize
+workers_unnested[, bins := mapply(FUN = seq, start_bin, end_bin, binsize)]
+workers_unnested <- tidyr::unnest(workers_unnested, bins)
+setDT(workers_unnested)
+```
+
+```{r worker_states_preparation}
+workers_states <- fread("Worker_23_segments.bed")
+names(workers_states) <- c("chr", "start", "end", "state")
+workers_states[, bins := mapply(FUN = seq, start, end, binsize)]
+workers_states <- tidyr::unnest(workers_states, bins)
+setDT(workers_states)
+```
+
+```{r queen_states_preparation}
+queen_states <- fread("Queen_23_segments.bed")
+names(queen_states) <- c("chr", "start", "end", "state")
+queen_states[, bins := mapply(FUN = seq, start, end, binsize)]
+queen_states <- tidyr::unnest(queen_states, bins)
+setDT(queen_states)
+```
+
+```{r drone_states_preparation}
+drones_states <- fread("Drone_23_segments.bed")
+names(drones_states) <- c("chr", "start", "end", "state")
+drones_states[, bins := mapply(FUN = seq, start, end, binsize)]
+drones_states <- tidyr::unnest(drones_states, bins)
+setDT(drones_states)
+```
+
+```{r merging}
+workers_unnested <- merge(workers_states[, .(chr, bins, state)], workers_unnested)
+queens_unnested <- merge(queen_states[, .(chr, bins, state)], workers_unnested)
+drones_unnested <- merge(drones_states[, .(chr, bins, state)], workers_unnested)
+rm(workers_states, queen_states, drones_states)
+gc()
+```
+
+
+```{r workers summary}
+workers_unnested$Kimura_round <- round(workers_unnested$Kimura, digits = 0)
+workers_summary <- workers_unnested[, .N, by = .(Kimura_round, state)]
+workers_unnested$Kimura_round <- NULL
+setnames(workers_summary, "Kimura_round", "Kimura")
+workers_summary[, total := sum(N), by = Kimura]
+workers_summary$percent <- workers_summary$N/workers_summary$total*100
+workers_summary$percent <- round(workers_summary$percent, digits = 2)
+workers_summary$state <- factor(workers_summary$state, levels = c("E1", "E2", "E3", "E4", "E5", "E6",
+                                                                    "E7", "E8", "E9", "E10", "E11", "E12",
+                                                                    "E13", "E14", "E15", "E16", "E17", "E18",
+                                                                    "E19", "E20", "E21", "E22", "E23"))
+workers_summary$caste <- "Workers"
+```
+
+```{r queens summary}
+queens_unnested$Kimura_round <- round(queens_unnested$Kimura, digits = 0)
+queens_summary <- queens_unnested[, .N, by = .(Kimura_round, state)]
+queens_unnested$Kimura_round <- NULL
+setnames(queens_summary, "Kimura_round", "Kimura")
+queens_summary[, total := sum(N), by = Kimura]
+queens_summary$percent <- queens_summary$N/queens_summary$total*100
+queens_summary$percent <- round(queens_summary$percent, digits = 2)
+queens_summary$state <- factor(queens_summary$state, levels = c("E1", "E2", "E3", "E4", "E5", "E6",
+                                                                    "E7", "E8", "E9", "E10", "E11", "E12",
+                                                                    "E13", "E14", "E15", "E16", "E17", "E18",
+                                                                    "E19", "E20", "E21", "E22", "E23"))
+queens_summary$caste <- "Queens"
+```
+
+```{r drones summary}
+drones_unnested$Kimura_round <- round(drones_unnested$Kimura, digits = 0)
+drones_summary <- drones_unnested[, .N, by = .(Kimura_round, state)]
+drones_unnested$Kimura_round <- NULL
+setnames(drones_summary, "Kimura_round", "Kimura")
+drones_summary[, total := sum(N), by = Kimura]
+drones_summary$percent <- drones_summary$N/drones_summary$total*100
+drones_summary$percent <- round(drones_summary$percent, digits = 2)
+drones_summary$state <- factor(drones_summary$state, levels = c("E1", "E2", "E3", "E4", "E5", "E6",
+                                                                    "E7", "E8", "E9", "E10", "E11", "E12",
+                                                                    "E13", "E14", "E15", "E16", "E17", "E18",
+                                                                    "E19", "E20", "E21", "E22", "E23"))
+drones_summary$caste <- "Drones"
+```
+
+```{r writing_unnested}
+fwrite(queens_unnested, file = "queens_bins.tsv", sep = "\t", col.names = T)
+fwrite(drones_unnested, file = "drones_bins.tsv", sep = "\t", col.names = T)
+fwrite(workers_unnested, file = "workers_bins.tsv", sep="\t", col.names = T)
+```
+
+
+```{r merging ds together}
+all_summary <- rbind(workers_summary, queens_summary, drones_summary)
+#fwrite(all_summary)
+```
+
+
+```{r building the graphs}
+library(RColorBrewer)
+
+# Define a custom palette with 23 colors
+palette <- c("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+                "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+                "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
+                "#c49c94", "#f7b6d2", "#c7c7c7", "#dbdb8d", "#9edae5",
+                "#8c6d31", "#c6dbef", "#fb9a99")
+
+
+genial_plot <- ggplot(data=all_summary, aes(x=Kimura, y=percent, fill=state)) +
+  geom_bar(stat="identity", position = position_stack(reverse = TRUE)) +
+  scale_fill_manual(name="Chromatin states", values = palette) + 
+  labs(x = "Kimura Substitution Level (%)", y="States Proportion (%)") +
+  theme_bw()+
+  theme(legend.position = "right")+
+  guides(x = guide_axis(n.dodge = 2))+
+  facet_wrap(~ caste)
+
+genial_plot
+
+#ggsave("./Genial_plot_23.svg", genial_plot)
+ggsave("./genial_plot_23.png", genial_plot, width = 12, height = 5)
+```
+
+```{r table_form}
+fancy_table <- dcast.data.table(all_summary, Kimura + state ~ caste,
+                                    value.var = c("N", "total", "percent"),
+                                    fun.aggregate = list(sum))
+```
+
+```{r zooming_young plot}
+genial_plot_young <- ggplot(data=all_summary[Kimura < 4], aes(x=Kimura, y=percent, fill=state)) +
+  geom_bar(stat="identity", position = position_stack(reverse = TRUE)) +
+  scale_fill_manual(name="Chromatin states", values = palette) + 
+  labs(x = "Kimura Substitution Level (%)", y="States Proportion (%)") +
+  theme_bw()+
+  theme(legend.position = "right")+
+  guides(x = guide_axis(n.dodge = 2))+
+  facet_wrap(~ caste)
+
+genial_plot_young
+ggsave("./genial_plot_23_young.png", genial_plot_young, width = 12, height = 5)
+```
+```{r zooming_mids plot}
+genial_plot_mids <- ggplot(data=all_summary[Kimura > 20 & Kimura < 40], aes(x=Kimura, y=percent, fill=state)) +
+  geom_bar(stat="identity", position = position_stack(reverse = TRUE)) +
+  scale_fill_manual(name="Chromatin states", values = palette) + 
+  labs(x = "Kimura Substitution Level (%)", y="States Proportion (%)") +
+  theme_bw()+
+  theme(legend.position = "right")+
+  guides(x = guide_axis(n.dodge = 2))+
+  facet_wrap(~ caste)
+
+genial_plot_mids
+ggsave("./genial_plot_23_mids.png", genial_plot_mids, width = 12, height = 5)
+```
+
+
+##Mid-age states elements changes from E8 to something else. 
+
+```{r}
+check_trend <- function(dt) {
+  if (nrow(dt) > 1) {
+    model <- lm(dt$bin_number ~ dt$Kimura)
+    p_value <- summary(model)$coefficients[2, "Pr(>|t|)"]
+    slope <- coef(model)[[2]]
+  } else {
+    # If there's only one value, set p-value to NA
+    p_value <- NA
+    slope <- NA
+  }
+  return(list(slope = slope, p_value = p_value))
+}
+```
+
+
+###Drones
+```{r}
+drones_mid_stats <- drones_unnested[Kimura > 15, .N, by = .(state, Kimura)]
+setnames(drones_mid_stats, "N", "bin_number")
+
+tmp <- drones_mid_stats[, c("slope", "pval") := check_trend(.SD), by = state]
+
+tmp$FDR <- p.adjust(tmp$pval)
+drones_mid_stats$FDR <- p.adjust(drones_mid_stats$pval)
+
+tmp$trend <- "unsignificant"
+tmp[FDR<0.05 & slope < 0, trend := "decrease"]
+tmp[FDR<0.05 & slope > 0, trend := "increase"]
+
+drone_mid_trends <- tmp[, .(state, trend)]
+drone_mid_trends <- unique(drone_mid_trends)
+rm(tmp)
+```
+###Queens
+```{r}
+queens_mid_stats <- queens_unnested[Kimura > 15, .N, by = .(state, Kimura)]
+setnames(queens_mid_stats, "N", "bin_number")
+
+tmp <- queens_mid_stats[, c("slope", "pval") := check_trend(.SD), by = state]
+
+tmp$FDR <- p.adjust(tmp$pval)
+queens_mid_stats$FDR <- p.adjust(queens_mid_stats$pval)
+
+tmp$trend <- "unsignificant"
+tmp[FDR<0.05 & slope < 0, trend := "decrease"]
+tmp[FDR<0.05 & slope > 0, trend := "increase"]
+
+queens_mid_trends <- tmp[, .(state, trend)]
+queens_mid_trends <- unique(queens_mid_trends)
+rm(tmp)
+```
+
+###Workers
+```{r}
+workers_mid_stats <- workers_unnested[Kimura > 15, .N, by = .(state, Kimura)]
+setnames(workers_mid_stats, "N", "bin_number")
+
+tmp <- workers_mid_stats[, c("slope", "pval") := check_trend(.SD), by = state]
+
+tmp$FDR <- p.adjust(tmp$pval)
+workers_mid_stats$FDR <- p.adjust(workers_mid_stats$pval)
+
+tmp$trend <- "unsignificant"
+tmp[FDR<0.05 & slope < 0, trend := "decrease"]
+tmp[FDR<0.05 & slope > 0, trend := "increase"]
+
+workers_mid_trends <- tmp[, .(state, trend)]
+workers_mid_trends <- unique(workers_mid_trends)
+rm(tmp)
+```
+
+##Young-age elements change from other states to E8
+###Drones
+```{r}
+drones_mid_stats <- drones_unnested[Kimura < 15, .N, by = .(state, Kimura)]
+setnames(drones_mid_stats, "N", "bin_number")
+
+tmp <- drones_mid_stats[, c("slope", "pval") := check_trend(.SD), by = state]
+
+tmp$FDR <- p.adjust(tmp$pval)
+drones_mid_stats$FDR <- p.adjust(drones_mid_stats$pval)
+
+tmp$trend <- "unsignificant"
+tmp[FDR<0.05 & slope < 0, trend := "decrease"]
+tmp[FDR<0.05 & slope > 0, trend := "increase"]
+
+drone_mid_trends <- tmp[, .(state, trend)]
+drone_mid_trends <- unique(drone_mid_trends)
+rm(tmp)
+```
+###Queens
+```{r}
+queens_mid_stats <- queens_unnested[Kimura < 15, .N, by = .(state, Kimura)]
+setnames(queens_mid_stats, "N", "bin_number")
+
+tmp <- queens_mid_stats[, c("slope", "pval") := check_trend(.SD), by = state]
+
+tmp$FDR <- p.adjust(tmp$pval)
+queens_mid_stats$FDR <- p.adjust(queens_mid_stats$pval)
+
+tmp$trend <- "unsignificant"
+tmp[FDR<0.05 & slope < 0, trend := "decrease"]
+tmp[FDR<0.05 & slope > 0, trend := "increase"]
+
+queens_mid_trends <- tmp[, .(state, trend)]
+queens_mid_trends <- unique(queens_mid_trends)
+rm(tmp)
+```
+
+###Workers
+```{r}
+workers_mid_stats <- workers_unnested[Kimura < 15, .N, by = .(state, Kimura)]
+setnames(workers_mid_stats, "N", "bin_number")
+
+tmp <- workers_mid_stats[, c("slope", "pval") := check_trend(.SD), by = state]
+
+tmp$FDR <- p.adjust(tmp$pval)
+workers_mid_stats$FDR <- p.adjust(workers_mid_stats$pval)
+
+tmp$trend <- "unsignificant"
+tmp[FDR<0.05 & slope < 0, trend := "decrease"]
+tmp[FDR<0.05 & slope > 0, trend := "increase"]
+
+workers_mid_trends <- tmp[, .(state, trend)]
+workers_mid_trends <- unique(workers_mid_trends)
+rm(tmp)
+```
+
+##Making a linear model for every element in the sample
+Here, we are trying to find out if there is a decreasing trend in number of repeat elements for every state and for every element.
+###Drones
+```{r drone_young_elements_by_state_element_Kimura}
+#Now let's gather some statistics about repeats decreasing and increasing their numbers due to Kimura level increase
+drones_young_stats <- drones_unnested[Kimura < 15, .N, by = .(state, element, Kimura)]
+setnames(drones_young_stats, "N", "bin_number")
+
+tmp <- drones_young_stats[, c("slope", "pval") := check_trend(.SD), by = .(element, state)]
+tmp$FDR <- p.adjust(tmp$pval)
+drones_young_stats$FDR <- p.adjust(drones_young_stats$pval)
+
+tmp$trend <- "unsignificant"
+tmp[FDR<0.05 & slope < 0, trend := "decrease"]
+tmp[FDR<0.05 & slope > 0, trend := "increase"]
+
+drone_trends <- tmp[, .N, by = .(state, trend)]
+drone_trends <- dcast.data.table(drone_trends, state ~ trend, value.var = 'N')
+rm(tmp)
+```
+###Queens
+```{r queen_young_elements}
+#Now let's gather some statistics about repeats decreasing and increasing their numbers due to Kimura level increase
+queens_young_stats <- queens_unnested[Kimura < 15, .N, by = .(state, element, Kimura)]
+setnames(queens_young_stats, "N", "bin_number")
+
+tmp <- queens_young_stats[, c("slope", "pval") := check_trend(.SD), by = .(element, state)]
+tmp$FDR <- p.adjust(tmp$pval)
+queens_young_stats$FDR <- p.adjust(queens_young_stats$pval)
+
+tmp$trend <- "unsignificant"
+tmp[FDR<0.05 & slope < 0, trend := "decrease"]
+tmp[FDR<0.05 & slope > 0, trend := "increase"]
+
+queens_trends <- tmp[, .N, by = .(state, trend)]
+queens_trends <- dcast.data.table(queens_trends, state ~ trend, value.var = 'N')
+rm(tmp)
+```
+###Workers
+```{r workers_young_elements}
+#Now let's gather some statistics about repeats decreasing and increasing their numbers due to Kimura level increase
+workers_young_stats <- workers_unnested[Kimura < 15, .N, by = .(state, element, Kimura)]
+setnames(workers_young_stats, "N", "bin_number")
+
+tmp <- workers_young_stats[, c("slope", "pval") := check_trend(.SD), by = .(element, state)]
+tmp$FDR <- p.adjust(tmp$pval)
+workers_young_stats$FDR <- p.adjust(workers_young_stats$pval)
+
+tmp$trend <- "unsignificant"
+tmp[FDR<0.05 & slope < 0, trend := "decrease"]
+tmp[FDR<0.05 & slope > 0, trend := "increase"]
+
+workers_trends <- tmp[, .N, by = .(state, trend)]
+workers_trends <- dcast.data.table(workers_trends, state ~ trend, value.var = 'N')
+rm(tmp)
+```
+
+```{r getting element names}
+unique(workers_young_stats[FDR<0.05, element])
+unique(queens_young_stats[FDR<0.05, element])
+unique(drones_young_stats[FDR<0.05, element])
+```
+As we can see, there is not that much of them, whose evolutionary trend is really visible. But there are some of them! 
+Let's see those elements, which states do they belong to
+
+```{r}
+tmp <- workers_young_stats[FDR < 0.05,  element]
+tmp <- unique(tmp)
+
+workers_repeats_with_trends <- workers_young_stats[element %in% tmp, j = sum(bin_number), by = .(element, state)]
+workers_repeats_with_trends <- workers_repeats_with_trends[order(workers_repeats_with_trends$element,
+                                                                 workers_repeats_with_trends$V1, decreasing = T)]
+
+queens_repeats_with_trends <- queens_young_stats[element %in% tmp, j = sum(bin_number), by = .(element, state)]
+queens_repeats_with_trends <- queens_repeats_with_trends[order(queens_repeats_with_trends$element,
+                                                                 queens_repeats_with_trends$V1, decreasing = T)]
+
+drones_repeats_with_trends <- drones_young_stats[element %in% tmp, j = sum(bin_number), by = .(element, state)]
+drones_repeats_with_trends <- drones_repeats_with_trends[order(drones_repeats_with_trends$element,
+                                                                 drones_repeats_with_trends$V1, decreasing = T)]
+
+```
+I do not know what to do with that...
+
+
+Let's try to make a regression by each state (excluding element) and see it's dynamics in evolution
+```{r}
+drones_young_stats <- drones_unnested[Kimura < 15, .N, by = .(state, element, Kimura)]
+setnames(drones_young_stats, "N", "bin_number")
+
+tmp <- drones_young_stats[, c("slope", "pval") := check_trend(.SD), by = state]
+tmp$FDR <- p.adjust(tmp$pval)
+tmp <- unique(tmp[, .(state, slope, pval, FDR)])
+
+
+tmp <- queens_young_stats[, c("slope", "pval") := check_trend(.SD), by = state]
+tmp$FDR <- p.adjust(tmp$pval)
+tmp <- unique(tmp[, .(state, slope, pval, FDR)])
+drones_young_stats$FDR <- p.adjust(drones_young_stats$pval)
+rm(tmp)
+```
+
+
+
+
+
+
+##Let's see how the evolution of the single-cell important repeats went
+
+```{r get repeats data from sc}
+markers <- fread("all_markers.tsv")
+repeat_markers <- markers$gene[grepl("^rnd-", markers$gene, perl = T)]
+repeat_markers <- unique(repeat_markers)
+```
+
+```{r}
+sc_repeats <- sapply(repeat_markers, function(x) strsplit(x, "#", fixed = T))
+setDT(sc_repeats)
+sc_repeats <- t(sc_repeats)
+colnames(sc_repeats) <- c("Element", "Class")
+sc_repeats <- as.data.table(sc_repeats)
+sc_repeats$Element <- sub("-family", "_family", sc_repeats$Element, fixed = T)
+
+for_plots <- all[family %in% sc_repeats$Element]
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r 3d graph}
+for3d <- all[, .(states, kimura, copy_number) ]
+for3d <- unique(for3d)
+for3d$states <- factor(for3d$states, levels = names(sort(table(for3d$states), decreasing = T)))
+for3d$states <- as.numeric(for3d$states)
+
+
+
+#cut off the very rare high copy number repeats
+for3d <- for3d[copy_number < 1500 & kimura < 40]
+
+#for3d$kimura <- round(for3d$kimura)
+setcolorder(for3d, c("copy_number", "kimura", "states"))
+
+volume_matrix <- dcast.data.table(for3d, kimura ~ copy_number, drop = F, 
+                                  value.var = "states", fill = NA)
+volume_matrix <- as.matrix(volume_matrix)
+volume_matrix <- volume_matrix[, -1]
+
+p <- plot_ly(z = volume_matrix, type = "surface")
+p
+```
+
+
+
+
+```{r merging ds together}
+all_summary <- rbind(workers_summary, queens_summary)
+```
+
+```{r}
+states_boxplot <- ggplot(data=all_summary, aes(y=kimura, x=states, fill=caste)) +
+  geom_boxplot(alpha = 0.5) +
+  scale_fill_manual(name="Caste", values = palette) + 
+  labs(x = "Kimura Substitution Level (%)", y="States Proportion (%)") +
+  theme_bw()+
+  theme(legend.position = "right")+
+  guides(x = guide_axis(n.dodge = 2))
+  #facet_wrap(~ caste)
+ggsave("./states_boxplot.png", states_boxplot)
+```
+
+Plotting the boxplots of relative enrichment
+```{r repeats in states readout}
+for (i in c("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8",  "E9", "E10", "E11", "E12")){
+  assign(i, fread(file = paste0("Repeat_in_states/", i, "_stats.csv")))
+}
+
+repeats_vs_genome <- rbindlist(list(E1, E2, E3, E4, E5, E6, E7, E8, E9, E10, E11, E12), idcol = TRUE)
+rm(E1, E2, E3, E4, E5, E6, E7, E8, E9, E10, E11, E12, i)
+
+names(repeats_vs_genome) <- c("State", "Repeats", "Genome")
+
+repeats_vs_genome$State <- paste("E", repeats_vs_genome$State, sep = "")
+repeats_vs_genome$State <- factor(repeats_vs_genome$State, levels = c("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8",  "E9", "E10", "E11", "E12"))
+repeats_vs_genome <- melt.data.table(repeats_vs_genome, id.vars = "State", variable.name = "Location")
+```
+
+```{r repeats vs states boxplotting}
+ggplot(repeats_vs_genome[State != "E9"], aes(x = State, y=value, fill=Location))+
+  geom_boxplot(position = "dodge")+
+  facet_wrap(~State, scales = "free_x")+
+  theme_bw()+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+```
+
+```{r}
+#running the ansari test to test dispersions
+ansari.test(repeats_vs_genome[State == "E3" & Location == "Genome", value], repeats_vs_genome[State == "E3" & Location == "Repeats", value])
+ansari.test(repeats_vs_genome[State == "E4" & Location == "Genome", value], repeats_vs_genome[State == "E4" & Location == "Repeats", value])
+
+#Luckily, the dispersions are equal, so the t-test could be used
+
+t.test(repeats_vs_genome[State == "E3" & Location == "Genome", value], repeats_vs_genome[State == "E3" & Location == "Repeats", value],
+       alternative = "less")
+
+t.test(repeats_vs_genome[State == "E4" & Location == "Genome", value], repeats_vs_genome[State == "E4" & Location == "Repeats", value],
+       alternative = "less")
+```
+
+###Here I try to find out the transcripts which have the E4 marks in them
+
+```{r}
+E4_genes <- fread("~/Desktop/Пасека/MODEL_WITH_BISULFITE_CHIP_RNA_50_BIN_V4_12_STATES/E4_genes_intersect_woMT.bed")
+list_genes <- E4_genes[V6 == "gene", V12]
+list_genes <- tstrsplit(list_genes, split = ";")[[1]]
+list_genes <- unique(list_genes)
+list_genes <- sub("gene_id \"", "", list_genes)
+list_genes <- sub("\"", "", list_genes)
+
+list_transcripts <- E4_genes[V6 == "transcript", V12]
+list_transcripts <- tstrsplit(list_transcripts, split = ";")[[2]]
+list_transcripts <- unique(list_transcripts)
+list_transcripts <- sub("transcript_id \"", "", list_transcripts)
+list_transcripts <- sub("\"", "", list_transcripts)
+list_transcripts <- unique(list_transcripts)
+fwrite(as.list(list_transcripts), file = "E4_transcripts.lst", sep = ";")
+
+
+boxplot(E4_genes$V13)
+hist(E4_genes$V13)
+```
+
+##Retrieve data from gtf annotation
+```{r gtf_parsing}
+stringtie_gtf <- fread(file = "stringtie_merged_with_ref.gtf", skip = 2)
+tmp <- fread(text = stringtie_gtf$V9, sep = ";", header = F, fill = T)
+tmp$V6 <- NULL
+tmp$exon_number <- ""
+tmp$gene_name <- ""
+tmp$ref_gene_id <- ""
+tmp[grepl("exon_number", V3) & grepl("gene_name", V4) , ':='(exon_number = V3,
+                                                             gene_name = V4,
+                                                             ref_gene_id = V5)]
+tmp[grepl("exon_number", V3) & !grepl("gene_name", V4) , ':=' (exon_number = V3,
+                                                               ref_gene_id = V4)]
+tmp[!grepl("exon_number", V3) & grepl("gene_name", V4) , ':=' (gene_name = V3,
+                                                               ref_gene_id = V4)]
+tmp[!grepl("exon_number", V3) & grepl("gene_name", V3) , ':=' (gene_name = V3,
+                                                               ref_gene_id = V4)]
+
+tmp$V3 <- tmp$V4 <- tmp$V5 <- NULL
+stringtie_gtf <- cbind.data.frame(stringtie_gtf, tmp)
+rm(tmp)
+
+stringtie_gtf$V9 <- NULL
+stringtie_gtf$V8 <- NULL
+
+names(stringtie_gtf) <- c("Chromosome", "Source", "type", "Start", "Stop", 
+                          "Score?", "Strand", "gene_id", "transcript_id", 
+                          "exon_number", "gene_name", "ref_gene_id")
+
+stringtie_gtf$gene_id <- sub("gene_id \"", "", stringtie_gtf$gene_id, fixed = T)
+stringtie_gtf$gene_id <- sub("\"", "", stringtie_gtf$gene_id, fixed = T)
+
+stringtie_gtf$transcript_id <- sub("transcript_id \"", "", stringtie_gtf$transcript_id, fixed = T)
+stringtie_gtf$transcript_id <- sub("\"", "", stringtie_gtf$transcript_id, fixed = T)
+
+stringtie_gtf$exon_number <- sub("exon_number \"", "", stringtie_gtf$exon_number, fixed = T)
+stringtie_gtf$exon_number <- sub("\"", "", stringtie_gtf$exon_number, fixed = T)
+
+stringtie_gtf$gene_name <- sub("gene_name \"", "", stringtie_gtf$gene_name, fixed = T)
+stringtie_gtf$gene_name <- sub("\"", "", stringtie_gtf$gene_name, fixed = T)
+
+stringtie_gtf$ref_gene_id <- sub("ref_gene_id \"", "", stringtie_gtf$ref_gene_id, fixed = T)
+stringtie_gtf$ref_gene_id <- sub("\"", "", stringtie_gtf$ref_gene_id, fixed = T)
+setDT(stringtie_gtf)
+
+stringtie_gtf[Strand == "+", Sequence_length := Stop - Start]
+stringtie_gtf[Strand == "-", Sequence_length := Start - Stop]
+stringtie_gtf$Sequence_length <- abs(stringtie_gtf$Sequence_length)
+
+stringtie_gtf[Strand == "+", gene_length := max(Stop) - min(Start), by = gene_id]
+stringtie_gtf[Strand == "-", gene_length := max(Start) - min(Stop), by = gene_id]
+stringtie_gtf$gene_length <- abs(stringtie_gtf$gene_length)
+```
+
+###Parsing the BLAST output
+
+```{r, eval=FALSE, echo=TRUE}
+#I took the file cluster_markers_blast_stringtie.out
+# and did this sed command to filter out alignments and to get only transcript names and scores
+
+sed -n '/Query=/, />/p' cluster_markers_blast_stringtie.out | grep -v ">" > cluster_markers_blast_results.out
+
+#And after that, edited it in gedit and removed lines wtih headers and made it fread-compatible
+```
+
+```{r parsing blast results}
+from_blast <- fread("cluster_markers_blast_results.out", fill = T, blank.lines.skip = T)
+#Let's fill the gaps
+from_blast[Query == "", Query := NA]
+from_blast <- fill(from_blast, c(Query, Query_length))
+#Making the separate column for the strand
+from_blast$Strand <- "+"
+from_blast[grepl("(-)", Sequence_name), Strand := "-"]
+from_blast$Sequence_name <- substr(from_blast$Sequence_name, 1, nchar(from_blast$Sequence_name) - 3)
+setcolorder(from_blast, c("Sequence_name", "Strand"))
+```
+
+```{r correlation of transcripts/gene length with number of hits}
+from_blast <- merge(from_blast, stringtie_gtf[type == "transcript", .(transcript_id, gene_id, gene_name, ref_gene_id, Sequence_length, gene_length)], 
+                    by.x = "Sequence_name", by.y = "transcript_id")
+
+tmp <- from_blast[, .N, by= .(Sequence_name, Sequence_length, gene_length)]
+tmp <- merge(tmp, from_blast[, .(Sequence_name, Sequence_length, gene_length)])
+cor.test(tmp$Sequence_length, tmp$N)
+cor.test(tmp$gene_length, tmp$N)
+```
+Correlation is somewhat equal to zero for transcripts
+and 
+equals zero for genes
+
+
+
+
+
+

@@ -1,0 +1,330 @@
+```{r libraries import}
+#install.packages("ggnewscale")
+library(ggnewscale)
+library(data.table)
+library(ggplot2)
+```
+
+
+
+Below is code for pretty plotting of the states 
+```{r data readout}
+worker_states <- fread("Worker_overlap.txt")
+queen_states <- fread("Queen_overlap.txt")
+drone_states <- fread("Drone_overlap.txt")
+
+old <- names(drone_states)
+
+new <- c("State", "Genome %", "CpG Islands", 
+         "Exons", "Genes", "TES", "TSS", "TSS 2kb", "Expressed_exons_drones",
+         "Expressed_genes_drones", "Repressed_exons_drones", "Repressed_genes_drones",
+         "Known_repeats", 
+         "Expressed_exons_queens", "Expressed_genes_queens", "Repressed_exons_queens",
+         "Repressed_genes_queens",
+         "Repeat regions", "Unknown repeats",
+         "Expressed_exons_workers",
+         "Expressed_genes_workers", "Repressed_exons_workers", "Repressed_genes_workers")
+
+setnames(worker_states, old, new)
+setnames(queen_states, old, new)
+setnames(drone_states, old, new)
+
+#remove last line
+worker_states <- worker_states[-nrow(worker_states), ]
+queen_states <- queen_states[-nrow(queen_states), ]
+drone_states <- drone_states[-nrow(drone_states), ]
+
+#remove extra columns
+tmp_w <- colnames(queen_states)[grepl("worker", colnames(queen_states), fixed = T)]
+tmp_q <- colnames(queen_states)[grepl("queen", colnames(queen_states), fixed = T)]
+tmp_d <- colnames(queen_states)[grepl("drone", colnames(queen_states), fixed = T)]
+
+worker_states[,  c(tmp_d, tmp_q) := NULL]
+queen_states[,  c(tmp_d, tmp_w) := NULL]
+drone_states[,  c(tmp_q, tmp_w) := NULL]
+
+rm(tmp_w, tmp_d, tmp_q, old, new)
+```
+
+```{r coercing}
+#coerce to numeric
+worker_states <- sapply(worker_states, as.numeric)
+queen_states <- sapply(queen_states, as.numeric)
+drone_states <- sapply(drone_states, as.numeric)
+
+#revert back to data.table
+worker_states <- as.data.table(worker_states)
+queen_states <- as.data.table(queen_states)
+drone_states <- as.data.table(drone_states)
+
+#add caste column 
+worker_states$caste <- "worker"
+queen_states$caste <- "queen"
+drone_states$caste <- "drone"
+
+#remove redundant _caste_name tails from colnames
+new <- names(worker_states)
+new <- sub("_workers", "", new)
+new <- sub("_", " ", new)
+
+setnames(worker_states, names(worker_states), new)
+setnames(queen_states, names(queen_states), new)
+setnames(drone_states, names(drone_states), new)
+rm(new)
+```
+
+```{r merging with histone marks}
+histone_marks <- fread("emissions_elim_23_model_64.txt")
+setnames(histone_marks, "State (Emission order)", "State")
+histone_marks <- sapply(histone_marks, as.numeric)
+histone_marks <- as.data.table(histone_marks)
+histone_marks <- melt.data.table(histone_marks, id.vars = "State", variable.name = "Feature")
+
+tmp_q <- histone_marks
+tmp_q$caste <- "queen"
+
+tmp_d <- histone_marks
+tmp_d$caste <- "drone"
+
+histone_marks$caste <- "worker"
+histone_marks <- rbindlist(list(histone_marks, tmp_d, tmp_q))
+rm(tmp_q, tmp_d)
+```
+
+```{r melting and merging datasets}
+ChromStates <- rbindlist(list(worker_states, queen_states, drone_states))
+ChromStates <- melt.data.table(ChromStates, id.vars = c("State", "caste"), variable.name = "Feature")
+ChromStates <- rbindlist(list(ChromStates, histone_marks), use.names = T)
+
+#Add fake features to make gap on plot
+fake_feature <- data.table(State = rep(c(1:23), 3),
+           value = rep(NA, 23*3), 
+           Feature = rep("", 23*3),
+           caste = c(rep("worker", 23), rep("drone", 23), rep("queen", 23)))
+
+ChromStates <- rbindlist(list(ChromStates, fake_feature), use.names = T)
+ChromStates$State <- paste("E", ChromStates$State, sep = "")
+ChromStates$State <- factor(ChromStates$State, levels = c("E1", "E2", "E3", "E4", "E5", "E6", 
+                                                          "E7", "E8",  "E9", "E10", "E11", "E12",
+                                                          "E13", "E14", "E15", "E16", "E17", "E18",
+                                                          "E19", "E20", "E21", "E22", "E23"))
+
+ChromStates <- ChromStates[!(Feature %in% c("Known repeats", "Unknown repeats"))]
+
+#ChromStates <- ChromStates[!(is.na(Feature))]
+#ChromStates$Feature <- droplevels(ChromStates$Feature)
+
+ChromStates$Feature <- factor(ChromStates$Feature, levels = c("Genome %", "", "H3K27ac", "H3K4me3", "H3K4me1", "H3K27me3", "ATAC-seq", "RNA-Seq", 
+                                                              "CpG Islands", "Repeat regions", "Genes", "TSS", "TSS 2kb", "TES",   
+                                                              "Expressed genes", "Expressed exons", "Repressed genes", "Repressed exons"))
+
+ChromStates <- ChromStates[order(ChromStates$Feature)]
+
+#try to round values up to 2 digits
+ChromStates$value <- round(ChromStates$value, digits = 2)
+ChromStates <- na.omit(ChromStates, cols="Feature")
+```
+
+We will make 2 separate pictures: 
+one for workers, another one - split - for drones + queens
+
+```{r prepare dataset for polygons}
+for_polygon <- ChromStates[caste == "drone"]
+for_polygon$x <- as.numeric(for_polygon$Feature)+0.5
+for_polygon$y <- as.numeric(for_polygon$State)+0.5
+
+for_polygon_1 <- for_polygon
+for_polygon_1$x <- for_polygon_1$x-1
+for_polygon_1$y <- for_polygon_1$y-1
+
+for_polygon_2 <- for_polygon
+for_polygon_2$x <- for_polygon_2$x
+for_polygon_2$y <- for_polygon_2$y-1
+
+for_polygon <- rbind.data.frame(for_polygon, for_polygon_1, for_polygon_2)
+rm(for_polygon_1, for_polygon_2)
+for_polygon <- for_polygon[!(is.na(Feature))]
+for_polygon <- for_polygon[order(for_polygon$y)]
+
+for_polygon <- for_polygon[order(for_polygon$State, for_polygon$Feature, for_polygon$y, -for_polygon$x)]
+```
+
+Plot for queens+drones
+queens - tiles (left part)
+drones - polygons (right part)
+
+```{r drones+queens plot}
+plot <- ggplot(ChromStates, aes(x=Feature, y=State, fill=value))+
+  
+  #Plotting genome percentage
+  geom_tile(data = ChromStates[caste == "queen"], 
+            aes(x = Feature, y = State, fill = value),
+            color="white", size=0.25, inherit.aes = F) +
+  
+  geom_text(data = ChromStates[caste == "queen" & Feature == "Genome %"],
+            aes(x = as.numeric(Feature) - 0.25, y = as.numeric(State) + 0.25,
+                label = value), color = "black")+
+
+  #split in two for queens/drones
+  geom_polygon(data = for_polygon[caste == "drone" & Feature == "Genome %"],
+               aes(x = x, y = y, group = State, fill = value),
+               colour="white", size=0.25, inherit.aes = F) +
+
+  geom_text(data = ChromStates[caste == "drone" & Feature == "Genome %"],
+            aes(x = as.numeric(Feature) + 0.25, y = as.numeric(State) - 0.25,
+                label = value), color = "black")+
+  scale_fill_gradientn(colours = c("#efedf5", "#bcbddc", "#756bb1"), na.value="white")+
+
+  new_scale_fill() +
+
+  #Plotting model features - they are the same, not split by castes
+  geom_tile(data = ChromStates[Feature %in% c("H3K27ac", "H3K4me3", "H3K4me1", "H3K27me3", "RNA-Seq", "ATAC-seq")],
+            aes(x = Feature, y = State, fill = value),
+            colour="white", size=0.25, inherit.aes = F)+
+  
+  geom_text(data = ChromStates[Feature %in% c("H3K27ac", "H3K4me3", "H3K4me1", "H3K27me3", "RNA-Seq", "ATAC-seq")],
+            aes(x = Feature, y = State, label = value), color = "black")+
+  scale_fill_gradientn(colours = c("#deebf7", "#9ecae1", "#3182bd"), na.value="white")+
+  
+  new_scale_fill() +
+
+  #Plotting occupied features
+  geom_tile(data = ChromStates[Feature %in% c("CpG Islands", "Repeat regions", "Genes", "TSS", "TSS 2kb", "TES",
+                                              "Expressed genes", "Expressed exons", "Repressed genes", "Repressed exons") &
+                                 caste == "queen"],
+            aes(x = Feature, y = State, fill = value),
+            colour="white", size=0.25, inherit.aes = F)+
+
+  geom_text(data = ChromStates[Feature %in% c("CpG Islands", "Repeat regions", "Genes", "TSS", "TSS 2kb", "TES",
+                                              "Expressed genes", "Expressed exons", "Repressed genes", "Repressed exons") &
+                                        caste == "queen"],
+            aes(x = as.numeric(Feature) - 0.25, y = as.numeric(State) + 0.25,
+                label = value), color = "black")+
+
+  geom_polygon(data = for_polygon[caste == "drone" & Feature == "CpG Islands"],
+               aes(x = x, y = y, group = State, fill = value),
+               colour="white", size=0.25, inherit.aes = F) +
+
+
+  geom_polygon(data = for_polygon[caste == "drone" & Feature == "Repeat regions"],
+               aes(x = x, y = y, group = State, fill = value),
+               colour="white", size=0.25, inherit.aes = F) +
+
+
+  geom_polygon(data = for_polygon[caste == "drone" & Feature == "Genes"],
+               aes(x = x, y = y, group = State, fill = value),
+               colour="white", size=0.25, inherit.aes = F) +
+
+
+  geom_polygon(data = for_polygon[caste == "drone" & Feature == "TSS"],
+               aes(x = x, y = y, group = State, fill = value),
+               colour="white", size=0.25, inherit.aes = F) +
+
+
+  geom_polygon(data = for_polygon[caste == "drone" & Feature == "TSS 2kb"],
+               aes(x = x, y = y, group = State, fill = value),
+               colour="white", size=0.25, inherit.aes = F) +
+
+  geom_polygon(data = for_polygon[caste == "drone" & Feature == "TES"],
+               aes(x = x, y = y, group = State, fill = value),
+               colour="white", size=0.25, inherit.aes = F) +
+
+  geom_polygon(data = for_polygon[caste == "drone" & Feature == "Expressed genes"],
+               aes(x = x, y = y, group = State, fill = value),
+               colour="white", size=0.25, inherit.aes = F) +
+
+
+  geom_polygon(data = for_polygon[caste == "drone" & Feature == "Expressed exons"],
+               aes(x = x, y = y, group = State, fill = value),
+               colour="white", size=0.25, inherit.aes = F) +
+
+
+  geom_polygon(data = for_polygon[caste == "drone" & Feature == "Repressed genes"],
+               aes(x = x, y = y, group = State, fill = value),
+               colour="white", size=0.25, inherit.aes = F) +
+
+
+  geom_polygon(data = for_polygon[caste == "drone" & Feature == "Repressed exons"],
+               aes(x = x, y = y, group = State, fill = value),
+               colour="white", size=0.25, inherit.aes = F) +
+
+  scale_fill_gradientn(colours = c("#e5f5f9", "#99d8c9", "#2ca25f"), na.value="white")+
+
+  geom_text(data = ChromStates[Feature %in% c("CpG Islands", "Repeat regions", "Genes", "TSS", "TSS 2kb", "TES",
+                                              "Expressed genes", "Expressed exons", "Repressed genes", "Repressed exons") &
+                                            caste == "drone"],
+            aes(x = as.numeric(Feature) + 0.25, y = as.numeric(State) - 0.25,
+                label = value), color = "black")+
+
+  theme_bw() +
+  theme(line = element_blank(),
+        rect = element_blank(),
+        text = element_text(family = "", face = "plain",
+            colour = "black", size = 12, lineheight = 0.9,
+            hjust = 0.5, vjust = 0.5, angle = 0, margin = margin(),
+            debug = FALSE),
+        axis.text.y = element_text(size=14, face = "bold"),
+        axis.text.x = element_text(size=12, face = "bold", angle = 45, hjust=1),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "none")
+plot
+ggsave(filename = "features_model_23.png", plot, width = 16, height = 9)
+```
+
+```{r workers plot}
+plot_workers <- ggplot(ChromStates, aes(x=Feature, y=State, fill=value))+
+  
+  #Plotting genome percentage
+  geom_tile(data = ChromStates[caste == "worker"], 
+            aes(x = Feature, y = State, fill = value),
+            color="white", size=0.25, inherit.aes = F) +
+  
+  geom_text(data = ChromStates[caste == "worker" & Feature == "Genome %"],
+            aes(x = Feature, y = State, label = value), color = "black")+
+
+ scale_fill_gradientn(colours = c("#efedf5", "#bcbddc", "#756bb1"), na.value="white")+
+
+  new_scale_fill() +
+
+  #Plotting model features - they are the same, not split by castes
+  geom_tile(data = ChromStates[Feature %in% c("H3K27ac", "H3K4me3", "H3K4me1", "H3K27me3", "RNA-Seq", "ATAC-seq")],
+            aes(x = Feature, y = State, fill = value),
+            colour="white", size=0.25, inherit.aes = F)+
+  
+  geom_text(data = ChromStates[Feature %in% c("H3K27ac", "H3K4me3", "H3K4me1", "H3K27me3", "RNA-Seq", "ATAC-seq")],
+            aes(x = Feature, y = State, label = value), color = "black")+
+  scale_fill_gradientn(colours = c("#deebf7", "#9ecae1", "#3182bd"), na.value="white")+
+  
+  new_scale_fill() +
+
+  #Plotting occupied features
+  geom_tile(data = ChromStates[Feature %in% c("CpG Islands", "Repeat regions", "Genes", "TSS", "TSS 2kb", "TES",
+                                              "Expressed genes", "Expressed exons", "Repressed genes", "Repressed exons") &
+                                 caste == "worker"],
+            aes(x = Feature, y = State, fill = value),
+            colour="white", size=0.25, inherit.aes = F)+
+
+  geom_text(data = ChromStates[Feature %in% c("CpG Islands", "Repeat regions", "Genes", "TSS", "TSS 2kb", "TES",
+                                              "Expressed genes", "Expressed exons", "Repressed genes", "Repressed exons") &
+                                        caste == "worker"],
+            aes(x = Feature, y = State, label = value), color = "black")+
+
+  
+  scale_fill_gradientn(colours = c("#e5f5f9", "#99d8c9", "#2ca25f"), na.value="white")+
+  theme_bw() +
+  theme(line = element_blank(),
+        rect = element_blank(),
+        text = element_text(family = "", face = "plain",
+            colour = "black", size = 12, lineheight = 0.9,
+            hjust = 0.5, vjust = 0.5, angle = 0, margin = margin(),
+            debug = FALSE),
+        axis.text.y = element_text(size=14, face = "bold"),
+        axis.text.x = element_text(size=12, face = "bold", angle = 45, hjust=1),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "none")
+plot_workers
+
+ggsave(filename = "features_model_workers_23.png", plot_workers, width = 16, height = 9)
+```

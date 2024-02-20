@@ -1,0 +1,116 @@
+---
+title: "Repeta_enrichments"
+author: "Nick Panyushev"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r libraries}
+library(data.table)
+```
+
+```{r data_readout_workers}
+workers_genome <- fread("Erichment_stats/Worker_genome_statistic.csv")
+workers_genome$type <- "Genome"
+workers_repeats <- fread("Erichment_stats/Worker_repeats_statistic.csv")
+workers_repeats$type <- "Repeats"
+workers_tmp <- rbind(workers_genome, workers_repeats)
+rm(workers_genome, workers_repeats)
+workers_tmp$E8[1:5]
+```
+
+```{r data_readout_queens}
+queens_genome <- fread("Erichment_stats/Queen_genome_statistic.csv")
+queens_genome$type <- "Genome"
+queens_repeats <- fread("Erichment_stats/Queen_repeats_statistic.csv")
+queens_repeats$type <- "Repeats"
+queens_tmp <- rbind(queens_genome, queens_repeats)
+rm(queens_genome, queens_repeats)
+queens_tmp$E8[1:5]
+```
+
+```{r data_readout_drones}
+drones_genome <- fread("Erichment_stats/Drone_genome_statistic.csv")
+drones_genome$type <- "Genome"
+drones_repeats <- fread("Erichment_stats/Drone_repeats_statistic.csv")
+drones_repeats$type <- "Repeats"
+drones_tmp <- rbind(drones_genome, drones_repeats)
+rm(drones_genome, drones_repeats)
+drones_tmp$E8[1:5]
+```
+
+
+
+```{r data_transform}
+workers_tmp <- melt(workers_tmp)
+queens_tmp <- melt(queens_tmp)
+drones_tmp <- melt(drones_tmp)
+
+
+workers <- data.table(State = paste("E", c(1:23), sep = ""),
+                                  Repeats = list(),
+                                  Genome = list())
+
+queens <- data.table(State = paste("E", c(1:23), sep = ""),
+                                  Repeats = list(),
+                                  Genome = list())
+
+drones <- data.table(State = paste("E", c(1:23), sep = ""),
+                                  Repeats = list(),
+                                  Genome = list())
+  
+for (i in paste0("E", c(1:23))){
+  workers[State == i, Repeats := workers_tmp[type == "Repeats" & variable == i]$value]
+  workers[State == i, Genome := workers_tmp[type == "Genome" & variable == i]$value]
+}
+
+for (i in paste0("E", c(1:23))){
+  queens[State == i, Repeats := queens_tmp[type == "Repeats" & variable == i]$value]
+  queens[State == i, Genome := queens_tmp[type == "Genome" & variable == i]$value]
+}
+
+for (i in paste0("E", c(1:23))){
+  drones[State == i, Repeats := drones_tmp[type == "Repeats" & variable == i]$value]
+  drones[State == i, Genome := drones_tmp[type == "Genome" & variable == i]$value]
+}
+
+rm(i, workers_tmp, queens_tmp, drones_tmp)
+```
+
+```{r gathering_statistics}
+perform_t_test <- function(list1, list2) {
+  t_test_result <- t.test(unlist(list1), unlist(list2), alternative = "greater")
+  return(t_test_result$p.value)
+}
+
+workers$t_test_greater <- mapply(perform_t_test, workers$Repeats, workers$Genome)
+workers$Significant <- FALSE
+workers[t_test_greater < 0.05, Significant := TRUE]
+
+queens$t_test_greater <- mapply(perform_t_test, queens$Repeats, queens$Genome)
+queens$Significant <- FALSE
+queens[t_test_greater < 0.05, Significant := TRUE]
+
+drones$t_test_greater <- mapply(perform_t_test, drones$Repeats, drones$Genome)
+drones$Significant <- FALSE
+drones[t_test_greater < 0.05, Significant := TRUE]
+```
+Make results in a table form
+```{r}
+tmpd <- drones[Significant == TRUE, .(State, t_test_greater)]
+tmpd$caste <- "drone"
+
+tmpq <- queens[Significant == TRUE, .(State, t_test_greater)]
+tmpq$caste <- "queen"
+
+tmpw <- workers[Significant == TRUE, .(State, t_test_greater)]
+tmpw$caste <- "worker"
+
+repeat_enriched <- rbindlist(list(tmpd, tmpq, tmpw))
+rm(tmpd, tmpw, tmpq)
+
+fwrite(repeat_enriched, "repeat_enriched_states.tsv", sep = "\t")
+```
+
+
+
